@@ -5,11 +5,14 @@ use std::{
 };
 
 use event_listener::EventListener;
-use futures_lite::{FutureExt, Stream, ready};
+use futures_lite::{FutureExt, Stream, StreamExt, ready};
 
 use crate::{
-    PowerSyncEnvironment, SyncOptions,
-    db::{internal::InnerPowerSyncState, pool::LeasedConnection, streams::SyncStream},
+    CrudTransaction, PowerSyncEnvironment, SyncOptions,
+    db::{
+        crud::CrudTransactionStream, internal::InnerPowerSyncState, pool::LeasedConnection,
+        streams::SyncStream,
+    },
     error::PowerSyncError,
     schema::Schema,
     sync::{
@@ -20,6 +23,7 @@ use crate::{
 };
 
 pub mod core_extension;
+pub mod crud;
 pub(crate) mod internal;
 pub mod pool;
 pub mod schema;
@@ -60,6 +64,19 @@ impl PowerSyncDatabase {
     pub async fn disconnect(&self) {
         self.download_actor_request(DownloadActorCommand::Disconnect)
             .await
+    }
+
+    pub fn crud_transactions<'a>(
+        &'a self,
+    ) -> impl Stream<Item = Result<CrudTransaction<'a>, PowerSyncError>> + 'a {
+        CrudTransactionStream::new(self)
+    }
+
+    pub async fn next_crud_transaction<'a>(
+        &'a self,
+    ) -> Result<Option<CrudTransaction<'a>>, PowerSyncError> {
+        let mut stream = self.crud_transactions();
+        stream.try_next().await
     }
 
     async fn download_actor_request(&self, cmd: DownloadActorCommand) {

@@ -1,4 +1,4 @@
-use std::{sync::Arc, vec};
+use std::{ffi::CStr, sync::Arc, vec};
 
 use async_executor::Executor;
 use log::LevelFilter;
@@ -6,7 +6,8 @@ use powersync::{
     schema::{Column, Schema, Table},
     *,
 };
-use rusqlite::{Connection, Row, params};
+use rusqlite::{Connection, Params, Row, params};
+use serde_json::{Map, Number, Value};
 use tempdir::TempDir;
 
 use crate::mock_sync_service::MockSyncService;
@@ -66,6 +67,41 @@ impl DatabaseTest {
 
         schema
     }
+}
+
+/// Runs a query and returns rows as a `serde_json` array.
+pub async fn query_all(db: &PowerSyncDatabase, sql: &str, params: impl Params) -> Value {
+    let reader = db.reader().await.unwrap();
+    let mut stmt = reader.prepare(sql).unwrap();
+    let column_names: Vec<String> = stmt.column_names().iter().map(|e| e.to_string()).collect();
+    let mut rows = stmt.query(params).unwrap();
+
+    let mut completed_rows = vec![];
+    while let Some(row) = rows.next().unwrap() {
+        let mut parsed = Map::new();
+        for (i, name) in column_names.iter().enumerate() {
+            let value = match row.get_ref_unwrap(i) {
+                rusqlite::types::ValueRef::Null => Value::Null,
+                rusqlite::types::ValueRef::Integer(e) => Value::Number(e.into()),
+                rusqlite::types::ValueRef::Real(e) => Value::Number(Number::from_f64(e).unwrap()),
+                rusqlite::types::ValueRef::Text(items) => {
+                    Value::String(std::str::from_utf8(items).unwrap().to_string())
+                }
+                rusqlite::types::ValueRef::Blob(_) => todo!("Not representable as JSON"),
+            };
+
+            parsed.insert(name.clone(), value);
+        }
+
+        completed_rows.push(Value::Object(parsed));
+    }
+
+    Value::Array(completed_rows)
+}
+
+pub async fn execute(db: &PowerSyncDatabase, sql: &str, params: impl Params) {
+    let writer = db.writer().await.unwrap();
+    writer.execute(sql, params).unwrap();
 }
 
 #[derive(Clone, Debug)]

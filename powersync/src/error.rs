@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::{borrow::Cow, fmt::Display};
 
 use rusqlite::Error as SqliteError;
+use rusqlite::types::FromSqlError;
 use thiserror::Error;
 
 /// A [RawPowerSyncError], but boxed.
@@ -75,6 +76,11 @@ pub(crate) enum RawPowerSyncError {
     /// This always indicates an error in how the core extension is used.
     #[error("SQLite: {inner}")]
     Sqlite { inner: SqliteError },
+    #[error("Reading from SQLite: {inner}")]
+    FromSql {
+        #[from]
+        inner: FromSqlError,
+    },
     #[error("Invalid version of core extension: {actual}")]
     InvalidCoreExtensionVersion { actual: String },
     #[error("Internal error while converting JSON: {inner}")]
