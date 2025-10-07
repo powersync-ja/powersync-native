@@ -1927,6 +1927,7 @@ version = "0.1.0"
 dependencies = [
  "async-broadcast",
  "async-channel 2.5.0",
+ "async-executor",
  "async-lock 3.4.1",
  "async-oneshot",
  "async-task",

@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use async_channel::Receiver;
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, params};
 
 use crate::{
     PowerSyncEnvironment,
-    db::{core_extension::CoreExtensionVersion, pool::LeasedConnection},
+    db::{core_extension::CoreExtensionVersion, pool::LeasedConnection, watch::TableNotifiers},
     error::PowerSyncError,
     schema::Schema,
     sync::{AsyncRequest, download::DownloadActorCommand, status::SyncStatus},

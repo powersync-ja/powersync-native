@@ -28,6 +28,7 @@ pub(crate) mod internal;
 pub mod pool;
 pub mod schema;
 pub mod streams;
+pub mod watch;
 
 #[derive(Clone)]
 pub struct PowerSyncDatabase {
@@ -64,6 +65,26 @@ impl PowerSyncDatabase {
     pub async fn disconnect(&self) {
         self.download_actor_request(DownloadActorCommand::Disconnect)
             .await
+    }
+
+    pub fn watch_tables<'a>(
+        &self,
+        emit_initially: bool,
+        tables: impl IntoIterator<Item = &'a str>,
+    ) -> impl Stream<Item = ()> {
+        self.inner.env.pool.update_notifiers().listen(
+            emit_initially,
+            tables
+                .into_iter()
+                .flat_map(|s| {
+                    [
+                        s.to_string(),
+                        format!("ps_data__{s}"),
+                        format!("ps_data_local__{s}"),
+                    ]
+                })
+                .collect(),
+        )
     }
 
     pub fn crud_transactions<'a>(

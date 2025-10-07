@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::HashSet,
     mem::MaybeUninit,
     ops::{Deref, DerefMut},
     path::Path,
@@ -11,7 +11,7 @@ use async_lock::{Mutex, MutexGuard};
 use rusqlite::{Connection, Error, params};
 use serde::Deserialize;
 
-use crate::error::PowerSyncError;
+use crate::{db::watch::TableNotifiers, error::PowerSyncError};
 
 /// A raw connection pool, giving out both synchronous and asynchronous leases to SQLite
 /// connections as well as managing update hooks.
@@ -29,10 +29,6 @@ impl ConnectionPool {
             .expect("could not install update hook");
 
         Mutex::new(connection)
-    }
-
-    pub fn updates(&self) -> async_broadcast::Receiver<SqliteUpdateNotification> {
-        self.state.send_notifications.new_receiver()
     }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, PowerSyncError> {
@@ -62,7 +58,6 @@ impl ConnectionPool {
         for reader in readers {
             release.send_blocking(reader).unwrap();
         }
-        let (send_updates, _) = async_broadcast::broadcast(64);
 
         Self {
             state: Arc::new(PoolState {
@@ -71,21 +66,23 @@ impl ConnectionPool {
                     take_reader: consume,
                     release_reader: release,
                 }),
-                send_notifications: send_updates,
+                table_notifiers: Default::default(),
             }),
         }
     }
 
     pub fn single_connection(conn: Connection) -> Self {
-        let (send_updates, _) = async_broadcast::broadcast(64);
-
         Self {
             state: Arc::new(PoolState {
                 writer: Self::prepare_writer(conn),
                 readers: None,
-                send_notifications: send_updates,
+                table_notifiers: Default::default(),
             }),
         }
+    }
+
+    pub fn update_notifiers(&self) -> &Arc<TableNotifiers> {
+        &self.state.table_notifiers
     }
 
     fn take_connection_sync(&'_ self, writer: bool) -> LeasedConnectionImpl<'_> {
@@ -108,18 +105,21 @@ impl ConnectionPool {
         }
     }
 
-    fn take_update_notifications(&self, writer: &Connection) -> Result<(), Error> {
+    fn take_update_notifications(
+        &self,
+        writer: &Connection,
+    ) -> Result<SqliteUpdateNotification, Error> {
         let mut stmt = writer.prepare_cached("SELECT powersync_update_hooks('get');")?;
         let rows: String = stmt.query_one(params![], |row| row.get(0))?;
 
         let updates = serde_json::from_str::<SqliteUpdateNotification>(&rows)
             .map_err(|_| Error::InvalidQuery)?;
 
-        if updates.tables.len() > 0 {
-            let _ = self.state.send_notifications.broadcast_blocking(updates);
+        if !updates.tables.is_empty() {
+            self.state.table_notifiers.notify_updates(&updates.tables);
         }
 
-        Ok(())
+        Ok(updates)
     }
 
     async fn take_connection_async(&'_ self, writer: bool) -> LeasedConnectionImpl<'_> {
@@ -165,13 +165,13 @@ pub trait LeasedConnection: DerefMut<Target = Connection> {}
 #[derive(Clone, Deserialize)]
 #[serde(transparent)]
 pub struct SqliteUpdateNotification {
-    tables: Arc<BTreeSet<String>>,
+    tables: Arc<HashSet<String>>,
 }
 
 struct PoolState {
     writer: Mutex<Connection>,
     readers: Option<PoolReaders>,
-    send_notifications: async_broadcast::Sender<SqliteUpdateNotification>,
+    table_notifiers: Arc<TableNotifiers>,
 }
 
 struct PoolReaders {

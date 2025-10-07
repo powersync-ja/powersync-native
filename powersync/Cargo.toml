@@ -30,6 +30,7 @@ url = "2.5.7"
 serde_path_to_error = { version = "0.1.20", optional = true }
 
 [dev-dependencies]
+async-executor = "1.13.3"
 async-task = "4.7.1"
 futures-lite = "2.6.1"
 futures-test = "0.3.31"
