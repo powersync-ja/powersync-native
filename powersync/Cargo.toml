@@ -1,0 +1,36 @@
+[package]
+name = "powersync"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+serde_path_to_error = ["dep:serde_path_to_error"]
+
+[dependencies]
+async-broadcast = "0.7.2"
+async-channel = "2.5.0"
+async-lock = "3.4.1"
+async-trait = "0.1.89"
+async-oneshot = "0.5.9"
+atomic_enum = "0.3.0"
+event-listener = "5.4.1"
+futures-lite = "2.6.1"
+http-client = "6.5.3"
+log = "0.4.28"
+pin-project-lite = "0.2.16"
+rusqlite = { version = "0.37.0", features = ["load_extension"] }
+scopeguard = "1.2.0"
+serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde_json = { version = "1.0.143", features = ["raw_value"] }
+thiserror = "2.0.16"
+url = "2.5.7"
+serde_path_to_error = { version = "0.1.20", optional = true }
+
+[dev-dependencies]
+async-task = "4.7.1"
+futures-lite = "2.6.1"
+futures-test = "0.3.31"
+powersync_test_utils = { path = "../powersync_test_utils" }

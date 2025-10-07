@@ -1,0 +1,29 @@
+[package]
+name = "powersync_test_utils"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["lib"]
+
+[build-dependencies]
+reqwest = { version = "0.11", features = ["blocking"] }
+
+[dependencies]
+async-channel = "2.5.0"
+async-executor = "1.13.3"
+async-trait = "0.1.89"
+env_logger = "0.11.8"
+futures-lite = "2.6.1"
+http-client = "6.5.3"
+log = "0.4.28"
+pin-project-lite = "0.2.16"
+powersync = { path = "../powersync", features = ["serde_path_to_error"] }
+rusqlite = { version = "0.37.0", features = ["load_extension", "bundled"] }
+serde = "1.0.228"
+serde_json = "1.0.145"
+serde_with = "3.15.0"
+tempdir = "0.3.7"
+
+[dev-dependencies]
+futures-lite = "2.6.1"
