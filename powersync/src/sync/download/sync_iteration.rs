@@ -175,23 +175,30 @@ impl DownloadEvent {
     /// perform.
     pub fn invoke_control(self, conn: &mut Connection) -> Result<Vec<Instruction>, PowerSyncError> {
         let tx = conn.transaction()?;
-        let mut stmt = tx.prepare_cached("SELECT powersync_control(?, ?)")?;
-        let (op, arg) = self.as_powersync_control_argument();
 
-        let mut rows = stmt.query(params![op, arg])?;
-        let Some(row) = rows.next()? else {
-            return Err(rusqlite::Error::QueryReturnedNoRows)?;
+        let instructions = {
+            let mut stmt = tx.prepare_cached("SELECT powersync_control(?, ?)")?;
+            let (op, arg) = self.as_powersync_control_argument();
+
+            let mut rows = stmt.query(params![op, arg])?;
+            let Some(row) = rows.next()? else {
+                return Err(rusqlite::Error::QueryReturnedNoRows)?;
+            };
+
+            let instructions = row.get_ref(0)?.as_str().map_err(|_| {
+                PowerSyncError::argument_error("Could not read powersync_control instructions")
+            })?;
+
+            if cfg!(feature = "serde_path_to_error") {
+                let jd = &mut serde_json::Deserializer::from_str(instructions);
+                serde_path_to_error::deserialize(jd)?
+            } else {
+                serde_json::from_str(&instructions)?
+            }
         };
-        let instructions = row.get_ref(0)?.as_str().map_err(|_| {
-            PowerSyncError::argument_error("Could not read powersync_control instructions")
-        })?;
 
-        if cfg!(feature = "serde_path_to_error") {
-            let jd = &mut serde_json::Deserializer::from_str(instructions);
-            Ok(serde_path_to_error::deserialize(jd)?)
-        } else {
-            Ok(serde_json::from_str(&instructions)?)
-        }
+        tx.commit()?;
+        Ok(instructions)
     }
 }
 

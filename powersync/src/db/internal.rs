@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_channel::Receiver;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Transaction, params};
 
 use crate::{
     PowerSyncEnvironment,
@@ -60,6 +60,35 @@ impl InnerPowerSyncState {
             .query_one(params![serialized_schema], |_| Ok(()))?;
         // TODO: Update readers? Should be fine at the moment because we're only doing this during
         // initialization.
+        Ok(())
+    }
+
+    /// Marks all crud items up until the `last_client_id` (inclusive) as handled and optionally
+    /// applies a custom write checkpoint.
+    pub async fn complete_crud_items(
+        &self,
+        last_client_id: i64,
+        write_checkpoint: Option<i64>,
+    ) -> Result<(), PowerSyncError> {
+        let mut writer = self.writer().await?;
+        let writer = writer.transaction()?;
+
+        writer.execute("DELETE FROM ps_crud WHERE id <= ?", params![last_client_id])?;
+        let mut target_op: i64 = 9223372036854775807;
+        if let Some(write_checkpoint) = write_checkpoint {
+            // If there are no remaining crud items we can set the target op to the checkpoint.
+            let mut stmt = writer.prepare("SELECT 1 FROM ps_crud LIMIT 1")?;
+            if stmt.query(params![])?.next()?.is_none() {
+                target_op = write_checkpoint;
+            }
+        }
+
+        writer.execute(
+            "UPDATE ps_buckets SET target_op = ? WHERE name = ?",
+            params![target_op, "$local"],
+        )?;
+        writer.commit()?;
+
         Ok(())
     }
 

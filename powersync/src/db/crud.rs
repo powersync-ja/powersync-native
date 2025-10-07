@@ -14,6 +14,7 @@ use crate::error::{PowerSyncError, RawPowerSyncError};
 /// All local writes that were made in a specific transaction.
 pub struct CrudTransaction<'a> {
     pub(crate) db: &'a PowerSyncDatabase,
+    pub last_item_id: i64,
     /// Unique transaction id.
     ///
     /// If null, this contains a list of changes recorded without an explicit transaction
@@ -21,6 +22,25 @@ pub struct CrudTransaction<'a> {
     pub id: Option<i64>,
     /// List of client-side changes.
     pub crud: Vec<CrudEntry>,
+}
+
+impl<'a> CrudTransaction<'a> {
+    /// Call to remove the changes from the local queue, once successfully uploaded.
+    pub async fn complete(self) -> Result<(), PowerSyncError> {
+        self.complete_internal(None).await
+    }
+
+    /// Call to remove the changes from the local queue, once successfully uploaded.
+    pub async fn complete_with_checkpoint(self, checkpoint: i64) -> Result<(), PowerSyncError> {
+        self.complete_internal(Some(checkpoint)).await
+    }
+
+    async fn complete_internal(self, checkpoint: Option<i64>) -> Result<(), PowerSyncError> {
+        self.db
+            .inner
+            .complete_crud_items(self.last_item_id, checkpoint)
+            .await
+    }
 }
 
 /// A single client-side change.
@@ -145,6 +165,7 @@ impl<'a> CrudTransactionStream<'a> {
             let tx = CrudTransaction {
                 db: db,
                 id: Some(tx_id),
+                last_item_id: id,
                 crud: crud_entries,
             };
 

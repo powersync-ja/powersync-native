@@ -106,7 +106,6 @@ fn progress_without_priorities() {
 
         request.send_checkpoint_complete(oplog_id, None).await;
         sync.wait_for_status(|s| !s.is_downloading()).await;
-        todo!();
 
         // Emit new data, progress should be 0/2 instead of 10/12.
         request

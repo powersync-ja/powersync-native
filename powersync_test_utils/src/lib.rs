@@ -1,4 +1,4 @@
-use std::{ffi::CStr, sync::Arc, vec};
+use std::{sync::Arc, vec};
 
 use async_executor::Executor;
 use log::LevelFilter;
