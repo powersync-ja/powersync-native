@@ -3,6 +3,7 @@ use std::io;
 use std::sync::Arc;
 use std::{borrow::Cow, fmt::Display};
 
+use http_client::http_types::StatusCode;
 use rusqlite::Error as SqliteError;
 use rusqlite::types::FromSqlError;
 use thiserror::Error;
@@ -101,4 +102,8 @@ pub(crate) enum RawPowerSyncError {
     },
     #[error("Internal error: {inner}")]
     Internal { inner: Cow<'static, str> },
+    #[error("The PowerSync service did not accept credentials returned by connector")]
+    InvalidCredentials,
+    #[error("Unexpected HTTP status code from PowerSync service: {code}")]
+    UnexpectedStatusCode { code: StatusCode },
 }

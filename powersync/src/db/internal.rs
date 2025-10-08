@@ -7,7 +7,7 @@ use crate::{
     db::{core_extension::CoreExtensionVersion, pool::LeasedConnection},
     error::PowerSyncError,
     schema::Schema,
-    sync::{coordinator::SyncCoordinator, status::SyncStatus},
+    sync::{MAX_OP_ID, coordinator::SyncCoordinator, status::SyncStatus},
     util::SharedFuture,
 };
 
@@ -69,7 +69,7 @@ impl InnerPowerSyncState {
         let writer = writer.transaction()?;
 
         writer.execute("DELETE FROM ps_crud WHERE id <= ?", params![last_client_id])?;
-        let mut target_op: i64 = 9223372036854775807;
+        let mut target_op: i64 = MAX_OP_ID;
         if let Some(write_checkpoint) = write_checkpoint {
             // If there are no remaining crud items we can set the target op to the checkpoint.
             let mut stmt = writer.prepare("SELECT 1 FROM ps_crud LIMIT 1")?;

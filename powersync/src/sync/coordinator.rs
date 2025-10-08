@@ -3,7 +3,10 @@ use std::sync::RwLock;
 use async_channel::{Receiver, Sender};
 use async_oneshot::oneshot;
 
-use crate::{SyncOptions, sync::download::DownloadActorCommand};
+use crate::{
+    SyncOptions,
+    sync::{download::DownloadActorCommand, upload::UploadActorCommand},
+};
 
 pub struct AsyncRequest<T> {
     pub command: T,
@@ -26,6 +29,7 @@ impl<T> AsyncRequest<T> {
 #[derive(Default)]
 pub struct SyncCoordinator {
     control_downloads: RwLock<Option<Sender<AsyncRequest<DownloadActorCommand>>>>,
+    control_uploads: RwLock<Option<Sender<AsyncRequest<UploadActorCommand>>>>,
 }
 
 impl SyncCoordinator {
@@ -39,16 +43,26 @@ impl SyncCoordinator {
             .await;
     }
 
-    pub fn receive_download_commands(&self) -> Receiver<AsyncRequest<DownloadActorCommand>> {
-        let mut downloads = self.control_downloads.write().unwrap();
-        if downloads.is_some() {
-            drop(downloads);
-            panic!("Download actor already active")
+    fn install_actor_channel<T>(
+        slot: &RwLock<Option<Sender<AsyncRequest<T>>>>,
+    ) -> Receiver<AsyncRequest<T>> {
+        let mut slot = slot.write().unwrap();
+        if slot.is_some() {
+            drop(slot);
+            panic!("Actor already installed")
         }
 
         let (send, receive) = async_channel::bounded(1);
-        *downloads = Some(send);
+        *slot = Some(send);
         receive
+    }
+
+    pub fn receive_download_commands(&self) -> Receiver<AsyncRequest<DownloadActorCommand>> {
+        Self::install_actor_channel(&self.control_downloads)
+    }
+
+    pub fn receive_upload_commands(&self) -> Receiver<AsyncRequest<UploadActorCommand>> {
+        Self::install_actor_channel(&self.control_uploads)
     }
 
     async fn download_actor_request(&self, cmd: DownloadActorCommand) {

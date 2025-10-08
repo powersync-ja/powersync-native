@@ -1,7 +1,12 @@
 use std::{str::FromStr, sync::Arc};
 
 use futures_lite::{AsyncBufReadExt, Stream, StreamExt, stream};
-use http_client::{HttpClient, Request, Response, http_types::Mime};
+use http_client::{
+    HttpClient, Request, Response,
+    http_types::{Mime, StatusCode},
+};
+use serde::Deserialize;
+use serde_with::{DisplayFromStr, serde_as};
 
 use crate::{
     db::internal::InnerPowerSyncState,
@@ -35,6 +40,7 @@ pub fn sync_stream(
             .send(request)
             .await
             .map_err(|e| RawPowerSyncError::Http { inner: e })?;
+        check_ok(&response)?;
 
         Ok::<Response, PowerSyncError>(response)
     };
@@ -46,6 +52,59 @@ pub fn sync_stream(
 
         stream::once(Ok(DownloadEvent::ConnectionEstablished)).chain(items)
     })
+}
+
+pub async fn write_checkpoint(
+    db: &InnerPowerSyncState,
+    client_id: &str,
+    auth: PowerSyncCredentials,
+) -> Result<i64, PowerSyncError> {
+    let url = auth.parsed_endpoint()?;
+    let mut url = url.join("write-checkpoint2.json").unwrap();
+    url.set_query(Some(&format!("client_id={}", client_id)));
+
+    let mut request = Request::get(url);
+    request.set_content_type(Mime::from_str("application/json").unwrap());
+    request.append_header("Authorization", format!("Token {}", auth.token));
+    request.append_header(
+        "Accept",
+        "application/vnd.powersync.bson-stream;q=0.9,application/x-ndjson;q=0.8",
+    );
+
+    let mut response = db
+        .env
+        .client
+        .send(request)
+        .await
+        .map_err(|e| RawPowerSyncError::Http { inner: e })?;
+    check_ok(&response)?;
+
+    #[derive(Deserialize)]
+    struct WriteCheckpointResponse {
+        data: WriteCheckpointData,
+    }
+
+    #[serde_as]
+    #[derive(Deserialize)]
+    struct WriteCheckpointData {
+        #[serde_as(as = "DisplayFromStr")]
+        write_checkpoint: i64,
+    }
+
+    let response: WriteCheckpointResponse = response
+        .body_json()
+        .await
+        .map_err(|e| RawPowerSyncError::Http { inner: e })?;
+
+    Ok(response.data.write_checkpoint)
+}
+
+fn check_ok(response: &Response) -> Result<(), PowerSyncError> {
+    match response.status() {
+        StatusCode::Ok => Ok(()),
+        StatusCode::Unauthorized => Err(RawPowerSyncError::InvalidCredentials.into()),
+        code => Err(RawPowerSyncError::UnexpectedStatusCode { code }.into()),
+    }
 }
 
 fn response_to_lines(

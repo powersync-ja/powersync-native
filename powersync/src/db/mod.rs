@@ -15,7 +15,7 @@ use crate::{
     },
     error::PowerSyncError,
     schema::Schema,
-    sync::{download::DownloadActor, status::SyncStatusData},
+    sync::{download::DownloadActor, status::SyncStatusData, upload::UploadActor},
 };
 
 pub mod core_extension;
@@ -47,6 +47,11 @@ impl PowerSyncDatabase {
         // Important: This needs to run outside of the future, so that the channel is created before
         // this function completes.
         let mut actor = DownloadActor::new(self.inner.clone());
+        async move { actor.run().await }
+    }
+
+    pub fn upload_actor(&self) -> impl Future<Output = ()> + 'static {
+        let mut actor = UploadActor::new(self.inner.clone());
         async move { actor.run().await }
     }
 

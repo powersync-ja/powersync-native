@@ -1945,6 +1945,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "serde_with",
  "thiserror 2.0.16",
  "url",
 ]

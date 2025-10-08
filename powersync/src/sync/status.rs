@@ -49,10 +49,23 @@ impl SyncStatus {
     }
 }
 
+pub enum UploadStatus {
+    Idle,
+    Uploading,
+    Error(PowerSyncError),
+}
+
+impl Default for UploadStatus {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
 #[derive(Default)]
 pub struct SyncStatusData {
     downloading: Arc<DownloadSyncStatus>,
     download_error: Option<PowerSyncError>,
+    uploads: UploadStatus,
 
     is_invalidated: AtomicBool,
     invalidated: Event,
@@ -63,6 +76,7 @@ impl SyncStatusData {
         Self {
             downloading: self.downloading.clone(),
             download_error: self.download_error.clone(),
+            uploads: Default::default(),
             is_invalidated: Default::default(),
             invalidated: Default::default(),
         }
@@ -137,6 +151,10 @@ impl SyncStatusData {
     pub(crate) fn set_download_error(&mut self, e: PowerSyncError) {
         // TODO: Reset to offline sync state?
         self.download_error = Some(e);
+    }
+
+    pub(crate) fn set_upload_state(&mut self, state: UploadStatus) {
+        self.uploads = state;
     }
 
     pub(crate) fn clear_download_errors(&mut self) {
