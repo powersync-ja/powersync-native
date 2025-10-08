@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
-use async_channel::Receiver;
 use rusqlite::{Connection, params};
 
 use crate::{
     PowerSyncEnvironment,
-    db::{core_extension::CoreExtensionVersion, pool::LeasedConnection, watch::TableNotifiers},
+    db::{core_extension::CoreExtensionVersion, pool::LeasedConnection},
     error::PowerSyncError,
     schema::Schema,
-    sync::{AsyncRequest, download::DownloadActorCommand, status::SyncStatus},
+    sync::{coordinator::SyncCoordinator, status::SyncStatus},
     util::SharedFuture,
 };
 
@@ -16,22 +15,18 @@ pub struct InnerPowerSyncState {
     pub env: PowerSyncEnvironment,
     did_initialize: SharedFuture<Result<(), PowerSyncError>>,
     pub schema: Arc<Schema<'static>>,
-    pub receive_download_commands: Receiver<AsyncRequest<DownloadActorCommand>>,
     pub status: SyncStatus,
+    pub sync: SyncCoordinator,
 }
 
 impl InnerPowerSyncState {
-    pub fn new(
-        env: PowerSyncEnvironment,
-        schema: Schema<'static>,
-        receive_download_commands: Receiver<AsyncRequest<DownloadActorCommand>>,
-    ) -> Self {
+    pub fn new(env: PowerSyncEnvironment, schema: Schema<'static>) -> Self {
         Self {
             env,
             did_initialize: SharedFuture::new(),
             schema: Arc::new(schema),
             status: SyncStatus::new(),
-            receive_download_commands,
+            sync: Default::default(),
         }
     }
 

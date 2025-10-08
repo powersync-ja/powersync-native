@@ -12,7 +12,7 @@ use crate::{
     db::internal::InnerPowerSyncState,
     error::PowerSyncError,
     sync::{
-        AsyncRequest,
+        coordinator::AsyncRequest,
         download::sync_iteration::{DownloadClient, DownloadEvent, StartDownloadIteration},
         instruction::CloseSyncStream,
     },
@@ -25,11 +25,7 @@ pub enum DownloadActorCommand {
     // TODO: Updating sync streams.
 }
 
-pub async fn run_download_actor(db: Arc<InnerPowerSyncState>) {
-    DownloadActor::new(db).run().await
-}
-
-struct DownloadActor {
+pub struct DownloadActor {
     state: DownloadActorState,
     commands: async_channel::Receiver<AsyncRequest<DownloadActorCommand>>,
     db: Arc<InnerPowerSyncState>,
@@ -37,8 +33,8 @@ struct DownloadActor {
 }
 
 impl DownloadActor {
-    fn new(db: Arc<InnerPowerSyncState>) -> Self {
-        let commands = db.receive_download_commands.clone();
+    pub fn new(db: Arc<InnerPowerSyncState>) -> Self {
+        let commands = db.sync.receive_download_commands();
 
         Self {
             state: DownloadActorState::Idle,
@@ -48,7 +44,7 @@ impl DownloadActor {
         }
     }
 
-    async fn run(&mut self) {
+    pub async fn run(&mut self) {
         while !self.state.is_stopped() {
             self.handle_event().await;
         }

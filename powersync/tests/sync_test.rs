@@ -2,7 +2,6 @@ use async_task::Task;
 use futures_lite::{StreamExt, future};
 use powersync::{PowerSyncDatabase, SyncOptions, SyncStatusData};
 use powersync_test_utils::{DatabaseTest, mock_sync_service::TestConnector, sync_line::Checkpoint};
-use rusqlite::params;
 
 struct SyncStreamTest {
     test: DatabaseTest,
@@ -14,9 +13,11 @@ impl SyncStreamTest {
     fn new() -> Self {
         let test = DatabaseTest::new();
         let db = test.in_memory_database();
+
         let sync_task = test.ex.spawn({
-            let db = db.clone();
-            async move { db.download_actor().await }
+            // Call download_actor() synchronously to register the channel.
+            let actor = db.download_actor();
+            async move { actor.await }
         });
 
         Self {

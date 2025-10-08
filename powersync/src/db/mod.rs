@@ -15,11 +15,7 @@ use crate::{
     },
     error::PowerSyncError,
     schema::Schema,
-    sync::{
-        AsyncRequest,
-        download::{DownloadActorCommand, run_download_actor},
-        status::SyncStatusData,
-    },
+    sync::{download::DownloadActor, status::SyncStatusData},
 };
 
 pub mod core_extension;
@@ -33,16 +29,12 @@ pub mod watch;
 #[derive(Clone)]
 pub struct PowerSyncDatabase {
     inner: Arc<InnerPowerSyncState>,
-    download_actor_commands: async_channel::Sender<AsyncRequest<DownloadActorCommand>>,
 }
 
 impl PowerSyncDatabase {
     pub fn new(env: PowerSyncEnvironment, schema: Schema<'static>) -> Self {
-        let (send_download, receive_download) = async_channel::bounded(1);
-
         Self {
-            inner: Arc::new(InnerPowerSyncState::new(env, schema, receive_download)),
-            download_actor_commands: send_download,
+            inner: Arc::new(InnerPowerSyncState::new(env, schema)),
         }
     }
 
@@ -51,20 +43,21 @@ impl PowerSyncDatabase {
     ///
     /// By exposing this as an entrypoint instead of starting the task on a specific entrypoint,
     /// the SDK stays executor-agnostic and is easier to access from C.
-    pub async fn download_actor(&self) {
-        run_download_actor(self.inner.clone()).await;
+    pub fn download_actor(&self) -> impl Future<Output = ()> + 'static {
+        // Important: This needs to run outside of the future, so that the channel is created before
+        // this function completes.
+        let mut actor = DownloadActor::new(self.inner.clone());
+        async move { actor.run().await }
     }
 
     /// Requests the download actor, started with [Self::download_actor], to start establishing a
     /// connection to the PowerSync service.
     pub async fn connect(&self, options: SyncOptions) {
-        self.download_actor_request(DownloadActorCommand::Connect(options))
-            .await
+        self.inner.sync.connect(options).await
     }
 
     pub async fn disconnect(&self) {
-        self.download_actor_request(DownloadActorCommand::Disconnect)
-            .await
+        self.inner.sync.disconnect().await
     }
 
     pub fn watch_tables<'a>(
@@ -98,15 +91,6 @@ impl PowerSyncDatabase {
     ) -> Result<Option<CrudTransaction<'a>>, PowerSyncError> {
         let mut stream = self.crud_transactions();
         stream.try_next().await
-    }
-
-    async fn download_actor_request(&self, cmd: DownloadActorCommand) {
-        let (request, response) = AsyncRequest::new(cmd);
-        self.download_actor_commands
-            .send(request)
-            .await
-            .expect("Download actor not running, start it with download_actor()");
-        let _ = response.await;
     }
 
     pub fn status(&self) -> Arc<SyncStatusData> {
