@@ -11,6 +11,8 @@ pub struct StreamPriority {
 impl StreamPriority {
     pub const HIGHEST: StreamPriority = StreamPriority { number: 0 };
 
+    pub const ONE: StreamPriority = StreamPriority { number: 1 };
+
     /// A low priority used to represent fully-completed sync operations across all priorities.
     pub const SENTINEL: StreamPriority = StreamPriority { number: i32::MAX };
 

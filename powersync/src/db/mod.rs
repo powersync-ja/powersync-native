@@ -1,11 +1,6 @@
-use std::{
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-};
+use std::sync::Arc;
 
-use event_listener::EventListener;
-use futures_lite::{FutureExt, Stream, StreamExt, ready};
+use futures_lite::{Stream, StreamExt};
 
 use crate::{
     CrudTransaction, PowerSyncEnvironment, SyncOptions,
@@ -103,65 +98,20 @@ impl PowerSyncDatabase {
     }
 
     pub fn watch_status<'a>(&'a self) -> impl Stream<Item = Arc<SyncStatusData>> + 'a {
-        struct StreamImpl<'a> {
-            db: &'a PowerSyncDatabase,
-            last_data: Option<Arc<SyncStatusData>>,
-            waiter: Option<EventListener>,
-        }
-
-        impl<'a> Stream for StreamImpl<'a> {
-            type Item = Arc<SyncStatusData>;
-
-            fn poll_next(
-                mut self: Pin<&mut Self>,
-                cx: &mut Context<'_>,
-            ) -> Poll<Option<Self::Item>> {
-                let this = &mut *self;
-
-                let Some(last_data) = &mut this.last_data else {
-                    // First poll, return immediately with the initial snapshot.
-                    let data = this.db.status();
-                    this.last_data = Some(data.clone());
-                    return Poll::Ready(Some(data));
-                };
-
-                loop {
-                    // Are we already waiting? If so, continue.
-                    if let Some(waiter) = &mut this.waiter {
-                        ready!(waiter.poll(cx));
-                        this.waiter = None;
-
-                        let data = this.db.status();
-                        *last_data = data.clone();
-                        return Poll::Ready(Some(data));
-                    }
-
-                    // Wait for previous data to become outdated.
-                    let Some(listener) = last_data.listen_for_changes() else {
-                        let data = this.db.status();
-                        *last_data = data.clone();
-                        return Poll::Ready(Some(data));
-                    };
-
-                    this.waiter = Some(listener);
-                }
-            }
-        }
-
-        StreamImpl {
-            db: self,
-            last_data: None,
-            waiter: None,
-        }
+        self.inner.watch_status()
     }
 
-    /// Creates a [SyncStream]
+    /// Creates a [SyncStream] based on name and optional parameters.
     pub fn sync_stream<'a>(
         &'a self,
         name: &'a str,
-        parameters: Option<&serde_json::Map<String, serde_json::Value>>,
+        parameters: Option<&serde_json::Value>,
     ) -> SyncStream<'a> {
-        SyncStream::new(self, name, parameters)
+        SyncStream::new(
+            self,
+            name,
+            parameters.map(|e| e.as_object().expect("Parameters should be a JSON object")),
+        )
     }
 
     pub async fn reader(&self) -> Result<impl LeasedConnection, PowerSyncError> {

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, value::RawValue};
 pub use shared_future::SharedFuture;
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug, Hash)]
 #[repr(transparent)]
 pub struct SerializedJsonObject {
     json: str,
@@ -27,6 +27,22 @@ impl SerializedJsonObject {
     }
 }
 
+impl ToOwned for SerializedJsonObject {
+    type Owned = Box<Self>;
+
+    fn to_owned(&self) -> Self::Owned {
+        let raw: &RawValue = self.as_ref();
+        Self::from_owned_value(raw.to_owned())
+    }
+}
+
+impl Clone for Box<SerializedJsonObject> {
+    fn clone(&self) -> Self {
+        let as_raw: &Box<RawValue> = unsafe { std::mem::transmute(self) };
+        SerializedJsonObject::from_owned_value(as_raw.clone())
+    }
+}
+
 impl<'de> Deserialize<'de> for Box<SerializedJsonObject> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -43,7 +59,8 @@ impl Serialize for SerializedJsonObject {
     where
         S: serde::Serializer,
     {
-        self.json.serialize(serializer)
+        let raw: &RawValue = self.as_ref();
+        raw.serialize(serializer)
     }
 }
 

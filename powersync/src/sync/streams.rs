@@ -1,24 +1,63 @@
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
-use serde_json::value::RawValue;
+use serde_with::{DurationSeconds, serde_as};
 
-use crate::{sync::instruction::ActiveStreamSubscription, util::SerializedJsonObject};
+use crate::{
+    StreamPriority, sync::instruction::ActiveStreamSubscription, util::SerializedJsonObject,
+};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Hash, PartialEq, Eq, Clone)]
 pub(crate) struct StreamKey {
     pub(crate) name: String,
-    pub(crate) parameters: Option<Box<RawValue>>,
+    pub(crate) parameters: Option<Box<SerializedJsonObject>>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Copy)]
 pub struct StreamDescription<'a> {
     /// The name of the stream as it appears in the stream definition for the PowerSync service.
     pub name: &'a str,
     /// Parameters used to subscribe to the stream, if any.
     ///
     /// The same stream can be subscribed to multiple times with different parameters.
+    #[serde(rename = "params")]
     pub parameters: Option<&'a SerializedJsonObject>,
+}
+
+impl Into<StreamKey> for StreamDescription<'_> {
+    fn into(self) -> StreamKey {
+        StreamKey {
+            name: self.name.to_string(),
+            parameters: self.parameters.map(|obj| obj.to_owned()),
+        }
+    }
+}
+
+/// A request sent from a PowerSync SDK to alter the subscriptions managed by this client.
+#[derive(Serialize)]
+pub enum SubscriptionChangeRequest<'a> {
+    #[serde(rename = "subscribe")]
+    Subscribe(SubscribeToStream<'a>),
+
+    /// Explicitly unsubscribes from a stream. This corresponds to the `unsubscribeAll()` API in the
+    /// SDKs.
+    ///
+    /// Unsubscribing a single stream subscription happens internally in the SDK by reducing its
+    /// refcount. Once no references are remaining, it's no longer listed in
+    /// [StartSyncStream.active_streams] which will cause it to get unsubscribed after its TTL.
+    #[serde(rename = "unsubscribe")]
+    Unsubscribe(StreamDescription<'a>),
+}
+
+#[serde_as]
+#[derive(Serialize)]
+pub struct SubscribeToStream<'a> {
+    pub stream: StreamDescription<'a>,
+    #[serde_as(as = "Option<DurationSeconds>")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<Duration>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<StreamPriority>,
 }
 
 /// Information about a subscribed sync stream.
@@ -85,3 +124,4 @@ impl<'a> Into<StreamDescription<'a>> for &'a StreamSubscriptionDescription<'a> {
         self.description()
     }
 }
+pub struct ChangedSyncSubscriptions(pub Vec<StreamKey>);

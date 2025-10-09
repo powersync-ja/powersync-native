@@ -5,7 +5,10 @@ use async_oneshot::oneshot;
 
 use crate::{
     SyncOptions,
-    sync::{download::DownloadActorCommand, upload::UploadActorCommand},
+    sync::{
+        download::DownloadActorCommand, streams::ChangedSyncSubscriptions,
+        upload::UploadActorCommand,
+    },
 };
 
 pub struct AsyncRequest<T> {
@@ -40,6 +43,16 @@ impl SyncCoordinator {
 
     pub async fn disconnect(&self) {
         self.download_actor_request(DownloadActorCommand::Disconnect)
+            .await;
+    }
+
+    pub async fn resolve_offline_sync_status(&self) {
+        self.download_actor_request(DownloadActorCommand::ResolveOfflineSyncStatusIfNotConnected)
+            .await;
+    }
+
+    pub async fn handle_subscriptions_changed(&self, update: ChangedSyncSubscriptions) {
+        self.download_actor_request(DownloadActorCommand::SubscriptionsChanged(update))
             .await;
     }
 

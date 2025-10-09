@@ -1,7 +1,15 @@
 use async_task::Task;
 use futures_lite::{StreamExt, future};
-use powersync::{PowerSyncDatabase, SyncOptions, SyncStatusData};
-use powersync_test_utils::{DatabaseTest, mock_sync_service::TestConnector, sync_line::Checkpoint};
+use powersync::{
+    PowerSyncDatabase, StreamPriority, StreamSubscription, StreamSubscriptionOptions, SyncOptions,
+    SyncStatusData, error::PowerSyncError,
+};
+use powersync_test_utils::{
+    DatabaseTest,
+    mock_sync_service::TestConnector,
+    sync_line::{BucketChecksum, Checkpoint, StreamDescription, SyncLine},
+};
+use serde_json::json;
 
 struct SyncStreamTest {
     test: DatabaseTest,
@@ -76,13 +84,221 @@ fn can_disable_default_stream() {
 
     sync.run(async {
         let request = sync.test.http.receive_requests.recv().await.unwrap();
-
         let streams = request.request_data.get("streams").unwrap();
 
         assert_eq!(
             streams.get("include_defaults").unwrap().as_bool(),
             Some(false)
         );
+    });
+}
+
+#[test]
+fn subscribes_with_streams() {
+    let sync = SyncStreamTest::new();
+    let (a, b) = sync
+        .run(async {
+            let a = sync
+                .db
+                .sync_stream("foo", Some(&json!({"foo": "a"})))
+                .subscribe()
+                .await?;
+            let b = sync
+                .db
+                .sync_stream("foo", Some(&json!({"foo": "b"})))
+                .subscribe_with(
+                    *StreamSubscriptionOptions::default().with_priority(StreamPriority::ONE),
+                )
+                .await?;
+            Ok::<(StreamSubscription, StreamSubscription), PowerSyncError>((a, b))
+        })
+        .unwrap();
+    sync.connect();
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        let streams = request
+            .request_data
+            .get("streams")
+            .unwrap()
+            .get("subscriptions")
+            .unwrap();
+
+        assert_eq!(
+            streams,
+            &json!([
+                {"stream": "foo", "parameters": {"foo": "a"}, "override_priority": null},
+                {"stream": "foo", "parameters": {"foo": "b"}, "override_priority": 1},
+            ])
+        );
+
+        let status = sync.db.status();
+        assert_eq!(
+            status.for_stream(&a).unwrap().subscription.is_active(),
+            false
+        );
+        assert_eq!(
+            status.for_stream(&b).unwrap().subscription.is_active(),
+            false
+        );
+        let mut next_status = sync.db.watch_status().skip(1);
+        let status = next_status.next();
+        request
+            .channel
+            .send(SyncLine::Custom(json!({"checkpoint": {
+                "last_op_id": "0",
+                "streams": [
+                    {"name": "foo", "is_default": false, "errors": []}
+                ],
+                "buckets": [
+                    {"bucket": "a", "priority": 3, "checksum": 0, "subscriptions": [
+                        {"sub": 0}
+                    ]},
+                    {"bucket": "b", "priority": 1, "checksum": 0, "subscriptions": [
+                        {"sub": 1}
+                    ]}
+                ],
+            }})))
+            .await
+            .unwrap();
+
+        // Subscriptions should be active now, but not marked as synced.
+        let status = status.await.unwrap();
+        for subscription in [&a, &b] {
+            let status = status.for_stream(subscription).unwrap();
+            assert!(status.subscription.is_active());
+            assert!(status.subscription.last_synced_at().is_none());
+            assert!(status.subscription.has_explicit_subscription());
+        }
+
+        // Mark stream a as synced.
+        request
+            .send_checkpoint_complete(0, Some(StreamPriority::ONE))
+            .await;
+        let status = next_status.next().await.unwrap();
+        assert!(
+            status
+                .for_stream(&a)
+                .unwrap()
+                .subscription
+                .last_synced_at()
+                .is_none()
+        );
+        assert!(
+            status
+                .for_stream(&b)
+                .unwrap()
+                .subscription
+                .last_synced_at()
+                .is_some()
+        );
+        b.wait_for_first_sync().await;
+
+        request.send_checkpoint_complete(0, None).await;
+        a.wait_for_first_sync().await;
+    });
+}
+
+#[test]
+fn reports_default_streams() {
+    let sync = SyncStreamTest::new();
+    sync.connect();
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        let mut next_status = sync.db.watch_status().skip(1);
+
+        request
+            .send_checkpoint(Checkpoint::single_bucket("default_stream", 0, None))
+            .await;
+        let status = next_status.next().await.unwrap();
+        let mut streams = status.streams();
+        let stream = streams.next().unwrap();
+        assert_eq!(stream.subscription.description().name, "default_stream");
+        assert!(stream.subscription.description().parameters.is_none());
+        assert!(stream.subscription.is_default());
+        assert!(!stream.subscription.has_explicit_subscription());
+    });
+}
+
+#[test]
+fn changes_subscriptions_dynamically() {
+    let sync = SyncStreamTest::new();
+    sync.connect();
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        let subscription = sync.db.sync_stream("a", None).subscribe().await.unwrap();
+
+        // Adding the subscription should reconnect.
+        request.channel.closed().await;
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        // The second request should include the new stream.
+        let streams = request
+            .request_data
+            .get("streams")
+            .unwrap()
+            .get("subscriptions")
+            .unwrap();
+        assert_eq!(
+            streams,
+            &json!([
+                {"stream": "a", "parameters": null, "override_priority": null},
+            ])
+        );
+
+        // Unsubscribing should not do anything due to TTL, but it's hard to test that.
+        subscription.unsubscribe();
+    });
+}
+
+#[test]
+fn subscriptions_update_while_offline() {
+    let sync = SyncStreamTest::new();
+    sync.run(async {
+        let db = sync.db.clone();
+        // Skip the initial status to get updates.
+        let next_status = sync
+            .test
+            .ex
+            .spawn(async move { db.watch_status().next().await.unwrap() });
+
+        // Subscribing while offline should add the stream to the subscriptions reported in the
+        // status.
+        let subscription = sync.db.sync_stream("foo", None).subscribe().await.unwrap();
+        let status = next_status.await;
+        assert!(status.for_stream(&subscription).is_some());
+    });
+}
+
+#[test]
+fn unsubscribe_all() {
+    let sync = SyncStreamTest::new();
+    sync.run(async {
+        let a = sync.db.sync_stream("a", None).subscribe().await.unwrap();
+        sync.db
+            .sync_stream("a", None)
+            .unsubscribe_all()
+            .await
+            .unwrap();
+
+        // Despite being active, it should not be requested.
+        sync.connect();
+
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        let streams = request
+            .request_data
+            .get("streams")
+            .unwrap()
+            .get("subscriptions")
+            .unwrap();
+
+        assert_eq!(streams, &json!([]));
+        a.unsubscribe();
     });
 }
 

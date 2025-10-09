@@ -15,6 +15,7 @@ use crate::{
         coordinator::AsyncRequest,
         download::sync_iteration::{DownloadClient, DownloadEvent, StartDownloadIteration},
         instruction::CloseSyncStream,
+        streams::ChangedSyncSubscriptions,
     },
 };
 
@@ -22,7 +23,8 @@ use crate::{
 pub enum DownloadActorCommand {
     Connect(SyncOptions),
     Disconnect,
-    // TODO: Updating sync streams.
+    ResolveOfflineSyncStatusIfNotConnected,
+    SubscriptionsChanged(ChangedSyncSubscriptions),
 }
 
 pub struct DownloadActor {
@@ -56,7 +58,7 @@ impl DownloadActor {
             parameters: serde_json::Value::Object(Map::new()),
             schema: self.db.schema.clone(),
             include_defaults: options.include_default_streams,
-            active_streams: vec![],
+            active_streams: self.db.current_streams.collect_active_streams(),
         };
         let future = DownloadClient::new(self.db.clone(), receive_event)
             .run(options)
@@ -87,7 +89,22 @@ impl DownloadActor {
                         self.start_iteration(options);
                         let _ = command.response.send(());
                     }
-                    DownloadActorCommand::Disconnect => {
+                    DownloadActorCommand::ResolveOfflineSyncStatusIfNotConnected => {
+                        let res = async {
+                            let writer = self.db.writer().await?;
+                            self.db
+                                .status
+                                .update(|s| s.resolve_offline_state(&writer))?;
+
+                            Ok::<(), PowerSyncError>(())
+                        }
+                        .await;
+                        if let Err(e) = res {
+                            warn!("Could not resolve offline sync state: {e}")
+                        }
+                    }
+                    DownloadActorCommand::Disconnect
+                    | DownloadActorCommand::SubscriptionsChanged(_) => {
                         // Not connected, nothing to do.
                     }
                 }
@@ -111,6 +128,14 @@ impl DownloadActor {
                             DownloadActorCommand::Connect(_) => {
                                 // We're already connected, do nothing.
                                 // TODO: Compare options and potentially reconnect
+                            }
+                            DownloadActorCommand::ResolveOfflineSyncStatusIfNotConnected => {
+                                // We're connected, so nothing we'd have to do.
+                            }
+                            DownloadActorCommand::SubscriptionsChanged(changed) => {
+                                let _ = send_events
+                                    .send(DownloadEvent::UpdateSubscriptions { keys: changed.0 })
+                                    .await;
                             }
                             DownloadActorCommand::Disconnect => {
                                 let _ = send_events.send(DownloadEvent::Stop).await;
@@ -201,7 +226,9 @@ impl DownloadActor {
         loop {
             match commands.recv().await {
                 Ok(command) => match command.command {
-                    DownloadActorCommand::Connect(_) => {
+                    DownloadActorCommand::Connect(_)
+                    | DownloadActorCommand::SubscriptionsChanged(_)
+                    | DownloadActorCommand::ResolveOfflineSyncStatusIfNotConnected => {
                         continue;
                     }
                     DownloadActorCommand::Disconnect => {

@@ -117,7 +117,7 @@ impl PendingSyncResponse {
 
     pub async fn send_checkpoint_complete(&self, last_op_id: i64, prio: Option<StreamPriority>) {
         let msg = SyncLine::Custom(match prio {
-            Some(prio) => json!({"checkpoint_partially_complete": {
+            Some(prio) => json!({"partial_checkpoint_complete": {
                 "priority": prio.priority_number(),
                 "last_op_id": last_op_id.to_string(),
             }}),

@@ -7,12 +7,13 @@ use std::{
 };
 
 use event_listener::{Event, EventListener};
+use http_client::http_types::conditional::if_match::IntoIter;
 use rusqlite::{Connection, params};
 
 use crate::{
     error::PowerSyncError,
     sync::{
-        instruction::DownloadSyncStatus,
+        instruction::{ActiveStreamSubscription, DownloadSyncStatus},
         progress::ProgressCounters,
         streams::{StreamDescription, StreamSubscriptionDescription},
     },
@@ -105,17 +106,32 @@ impl SyncStatusData {
         for stream in &self.downloading.streams {
             if stream.name == key.name && stream.parameters.as_ref().map(|e| &**e) == key.parameters
             {
-                return Some(SyncStreamStatus {
-                    progress: match self.downloading.downloading {
-                        None => None,
-                        Some(_) => Some(stream.progress.clone()),
-                    },
-                    subscription: StreamSubscriptionDescription { core: stream },
-                });
+                return Some(self.publish_stream_subscription(stream));
             }
         }
 
         None
+    }
+
+    /// All sync streams currently being tracked in the database.
+    pub fn streams<'a>(&'a self) -> impl Iterator<Item = SyncStreamStatus<'a>> + 'a {
+        self.downloading
+            .streams
+            .iter()
+            .map(|stream| self.publish_stream_subscription(stream))
+    }
+
+    fn publish_stream_subscription<'a>(
+        &'a self,
+        stream: &'a ActiveStreamSubscription,
+    ) -> SyncStreamStatus<'a> {
+        SyncStreamStatus {
+            progress: match self.downloading.downloading {
+                None => None,
+                Some(_) => Some(stream.progress.clone()),
+            },
+            subscription: StreamSubscriptionDescription { core: stream },
+        }
     }
 
     /// Returns an [EventListener] that completes once this data is stale, or returns [None]

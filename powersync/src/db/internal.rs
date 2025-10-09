@@ -1,13 +1,21 @@
-use std::sync::Arc;
+use std::{
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
 
+use event_listener::EventListener;
+use futures_lite::{FutureExt, Stream, StreamExt, ready};
 use rusqlite::{Connection, params};
 
 use crate::{
     PowerSyncEnvironment,
-    db::{core_extension::CoreExtensionVersion, pool::LeasedConnection},
+    db::{
+        core_extension::CoreExtensionVersion, pool::LeasedConnection, streams::SyncStreamTracker,
+    },
     error::PowerSyncError,
     schema::Schema,
-    sync::{MAX_OP_ID, coordinator::SyncCoordinator, status::SyncStatus},
+    sync::{MAX_OP_ID, coordinator::SyncCoordinator, status::SyncStatus, status::SyncStatusData},
     util::SharedFuture,
 };
 
@@ -17,6 +25,7 @@ pub struct InnerPowerSyncState {
     pub schema: Arc<Schema<'static>>,
     pub status: SyncStatus,
     pub sync: SyncCoordinator,
+    pub current_streams: SyncStreamTracker,
 }
 
 impl InnerPowerSyncState {
@@ -27,6 +36,7 @@ impl InnerPowerSyncState {
             schema: Arc::new(schema),
             status: SyncStatus::new(),
             sync: Default::default(),
+            current_streams: SyncStreamTracker::default(),
         }
     }
 
@@ -98,4 +108,67 @@ impl InnerPowerSyncState {
     }
 
     pub async fn sync_iteration_delay(&self) {}
+
+    pub fn watch_status<'a>(&'a self) -> impl Stream<Item = Arc<SyncStatusData>> + 'a {
+        struct StreamImpl<'a> {
+            db: &'a InnerPowerSyncState,
+            last_data: Option<Arc<SyncStatusData>>,
+            waiter: Option<EventListener>,
+        }
+
+        impl<'a> Stream for StreamImpl<'a> {
+            type Item = Arc<SyncStatusData>;
+
+            fn poll_next(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Option<Self::Item>> {
+                let this = &mut *self;
+
+                let Some(last_data) = &mut this.last_data else {
+                    // First poll, return immediately with the initial snapshot.
+                    let data = this.db.status.current_snapshot();
+                    this.last_data = Some(data.clone());
+                    return Poll::Ready(Some(data));
+                };
+
+                loop {
+                    // Are we already waiting? If so, continue.
+                    if let Some(waiter) = &mut this.waiter {
+                        ready!(waiter.poll(cx));
+                        this.waiter = None;
+
+                        let data = this.db.status.current_snapshot();
+                        *last_data = data.clone();
+                        return Poll::Ready(Some(data));
+                    }
+
+                    // Wait for previous data to become outdated.
+                    let Some(listener) = last_data.listen_for_changes() else {
+                        let data = this.db.status.current_snapshot();
+                        *last_data = data.clone();
+                        return Poll::Ready(Some(data));
+                    };
+
+                    this.waiter = Some(listener);
+                }
+            }
+        }
+
+        StreamImpl {
+            db: self,
+            last_data: None,
+            waiter: None,
+        }
+    }
+
+    pub async fn wait_for_status(&self, mut predicate: impl FnMut(&SyncStatusData) -> bool) {
+        let mut stream = self.watch_status();
+        loop {
+            let status = stream.next().await.unwrap();
+            if predicate(&status) {
+                return;
+            }
+        }
+    }
 }
