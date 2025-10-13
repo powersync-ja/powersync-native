@@ -4,11 +4,10 @@ use std::task::{Context, Poll};
 use futures_lite::{FutureExt, Stream, ready};
 use pin_project_lite::pin_project;
 use rusqlite::params;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::PowerSyncDatabase;
-use crate::db::schema::Table;
 use crate::error::{PowerSyncError, RawPowerSyncError};
 
 /// All local writes that were made in a specific transaction.
@@ -109,7 +108,7 @@ impl CrudEntry {
 }
 
 /// Type of local change.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub enum UpdateType {
     /// Insert or replace a row. All non-null columns are included in the data.
     #[serde(rename = "PUT")]

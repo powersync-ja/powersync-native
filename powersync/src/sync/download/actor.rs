@@ -25,6 +25,7 @@ pub enum DownloadActorCommand {
     Disconnect,
     ResolveOfflineSyncStatusIfNotConnected,
     SubscriptionsChanged(ChangedSyncSubscriptions),
+    CrudUploadComplete,
 }
 
 pub struct DownloadActor {
@@ -104,7 +105,8 @@ impl DownloadActor {
                         }
                     }
                     DownloadActorCommand::Disconnect
-                    | DownloadActorCommand::SubscriptionsChanged(_) => {
+                    | DownloadActorCommand::SubscriptionsChanged(_)
+                    | DownloadActorCommand::CrudUploadComplete => {
                         // Not connected, nothing to do.
                     }
                 }
@@ -136,6 +138,9 @@ impl DownloadActor {
                                 let _ = send_events
                                     .send(DownloadEvent::UpdateSubscriptions { keys: changed.0 })
                                     .await;
+                            }
+                            DownloadActorCommand::CrudUploadComplete => {
+                                let _ = send_events.send(DownloadEvent::CompletedUpload).await;
                             }
                             DownloadActorCommand::Disconnect => {
                                 let _ = send_events.send(DownloadEvent::Stop).await;
@@ -228,7 +233,8 @@ impl DownloadActor {
                 Ok(command) => match command.command {
                     DownloadActorCommand::Connect(_)
                     | DownloadActorCommand::SubscriptionsChanged(_)
-                    | DownloadActorCommand::ResolveOfflineSyncStatusIfNotConnected => {
+                    | DownloadActorCommand::ResolveOfflineSyncStatusIfNotConnected
+                    | DownloadActorCommand::CrudUploadComplete => {
                         continue;
                     }
                     DownloadActorCommand::Disconnect => {

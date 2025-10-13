@@ -20,7 +20,7 @@ async-oneshot = "0.5.9"
 atomic_enum = "0.3.0"
 event-listener = "5.4.1"
 futures-lite = "2.6.1"
-http-client = "6.5.3"
+http-client = { version = "6.5.3", default-features = false }
 log = "0.4.28"
 pin-project-lite = "0.2.16"
 rusqlite = { version = "0.37.0", features = ["load_extension"] }

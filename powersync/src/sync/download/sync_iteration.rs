@@ -76,8 +76,15 @@ impl DownloadClient {
                             &options,
                         )
                         .await?;
+
+                        // Trigger a crud upload after establishing a sync stream.
+                        self.db.sync.trigger_crud_uploads().await;
                     }
-                    Instruction::FetchCredentials { did_expire } => todo!(),
+                    Instruction::FetchCredentials { did_expire: _ } => {
+                        // TODO: Pre-fetching credentials
+                        // If did_expire is true, the core extension will also emit a stop
+                        // instruction. So we don't have to handle that separately.
+                    }
                     Instruction::CloseSyncStream(close) => {
                         break 'event Ok(close);
                     }

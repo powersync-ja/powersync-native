@@ -4,7 +4,7 @@ mod sync;
 mod util;
 
 pub use db::PowerSyncDatabase;
-pub use db::crud::{CrudEntry, CrudTransaction};
+pub use db::crud::{CrudEntry, CrudTransaction, UpdateType};
 pub use db::pool::ConnectionPool;
 pub use db::streams::StreamSubscription;
 pub use db::streams::StreamSubscriptionOptions;

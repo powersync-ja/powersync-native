@@ -155,7 +155,16 @@ impl UploadActor {
                     let (result, state) = result.await;
 
                     match result {
-                        Ok(_) => Some(UploadActorState::Connected(state)),
+                        Ok(_) => {
+                            // It's possible that pending CRUD uploads were preventing data from
+                            // syncing. So now that that's completed, notify the download client in
+                            // case it needs to retry.
+                            self.db.sync.mark_crud_uploads_completed().await;
+
+                            // Apart from that, the upload is done and we transition back into the
+                            // ready connected state to start the next iteration when needed.
+                            Some(UploadActorState::Connected(state))
+                        }
                         Err(e) => {
                             warn!("CRUD uploads failed, will retry, {e}");
                             self.db
@@ -196,7 +205,6 @@ impl UploadActor {
                 }
             }
             UploadActorState::Stopped => panic!("No further state transitions after stopped"),
-            _ => todo!(),
         };
     }
 

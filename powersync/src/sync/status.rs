@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -7,7 +8,6 @@ use std::{
 };
 
 use event_listener::{Event, EventListener};
-use http_client::http_types::conditional::if_match::IntoIter;
 use rusqlite::{Connection, params};
 
 use crate::{
@@ -50,6 +50,7 @@ impl SyncStatus {
     }
 }
 
+#[derive(Debug)]
 pub enum UploadStatus {
     Idle,
     Uploading,
@@ -97,6 +98,17 @@ impl SyncStatusData {
 
     pub fn download_error(&self) -> Option<&PowerSyncError> {
         self.download_error.as_ref()
+    }
+
+    pub fn is_uploading(&self) -> bool {
+        matches!(self.uploads, UploadStatus::Uploading)
+    }
+
+    pub fn upload_error(&self) -> Option<&PowerSyncError> {
+        match self.uploads {
+            UploadStatus::Error(ref e) => Some(e),
+            _ => None,
+        }
     }
 
     /// Status information for a stream, if it's a stream that is currently tracked by the sync
@@ -179,6 +191,16 @@ impl SyncStatusData {
 
     pub(crate) fn clear_download_errors(&mut self) {
         self.download_error = None;
+    }
+}
+
+impl Debug for SyncStatusData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncStatusData")
+            .field("downloading", &self.downloading)
+            .field("download_error", &self.download_error)
+            .field("uploads", &self.uploads)
+            .finish()
     }
 }
 

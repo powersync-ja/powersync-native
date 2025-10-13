@@ -38,12 +38,27 @@ pub struct SyncCoordinator {
 
 impl SyncCoordinator {
     pub async fn connect(&self, options: SyncOptions) {
+        let connector = options.connector.clone();
         self.download_actor_request(DownloadActorCommand::Connect(options))
+            .await;
+        self.upload_actor_request(UploadActorCommand::Connect(connector))
             .await;
     }
 
     pub async fn disconnect(&self) {
         self.download_actor_request(DownloadActorCommand::Disconnect)
+            .await;
+        self.upload_actor_request(UploadActorCommand::Disconnect)
+            .await;
+    }
+
+    pub async fn trigger_crud_uploads(&self) {
+        self.upload_actor_request(UploadActorCommand::TriggerCrudUpload)
+            .await;
+    }
+
+    pub async fn mark_crud_uploads_completed(&self) {
+        self.download_actor_request(DownloadActorCommand::CrudUploadComplete)
             .await;
     }
 
@@ -98,6 +113,17 @@ impl SyncCoordinator {
             .send(request)
             .await
             .expect("Download actor not running, start it with download_actor()");
+        let _ = response.await;
+    }
+
+    async fn upload_actor_request(&self, cmd: UploadActorCommand) {
+        let uploads = Self::obtain_channel(&self.control_uploads);
+
+        let (request, response) = AsyncRequest::new(cmd);
+        uploads
+            .send(request)
+            .await
+            .expect("Upload actor not running, start it with upload_actor()");
         let _ = response.await;
     }
 }
