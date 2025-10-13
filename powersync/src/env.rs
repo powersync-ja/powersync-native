@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use http_client::HttpClient;
 
 use crate::{db::core_extension::powersync_init_static, error::PowerSyncError};
@@ -5,12 +7,12 @@ use crate::{db::core_extension::powersync_init_static, error::PowerSyncError};
 use super::db::pool::ConnectionPool;
 
 pub struct PowerSyncEnvironment {
-    pub(crate) client: Box<dyn HttpClient>,
+    pub(crate) client: Arc<dyn HttpClient>,
     pub(crate) pool: ConnectionPool,
 }
 
 impl PowerSyncEnvironment {
-    pub fn custom(client: Box<dyn HttpClient>, pool: ConnectionPool) -> Self {
+    pub fn custom(client: Arc<dyn HttpClient>, pool: ConnectionPool) -> Self {
         Self { client, pool }
     }
 

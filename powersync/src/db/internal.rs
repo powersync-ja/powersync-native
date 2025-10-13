@@ -107,7 +107,9 @@ impl InnerPowerSyncState {
         Ok(self.env.pool.writer().await)
     }
 
-    pub async fn sync_iteration_delay(&self) {}
+    pub async fn sync_iteration_delay(&self) {
+        todo!()
+    }
 
     pub fn watch_status<'a>(&'a self) -> impl Stream<Item = Arc<SyncStatusData>> + 'a {
         struct StreamImpl<'a> {

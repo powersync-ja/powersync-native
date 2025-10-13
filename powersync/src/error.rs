@@ -39,10 +39,9 @@ impl From<serde_json::Error> for PowerSyncError {
     }
 }
 
-#[cfg(feature = "serde_path_to_error")]
-impl From<serde_path_to_error::Error<serde_json::Error>> for PowerSyncError {
-    fn from(value: serde_path_to_error::Error<serde_json::Error>) -> Self {
-        RawPowerSyncError::JsonConversionWithPath { inner: value }.into()
+impl From<http_client::Error> for PowerSyncError {
+    fn from(value: http_client::Error) -> Self {
+        RawPowerSyncError::Http { inner: value }.into()
     }
 }
 
@@ -86,11 +85,6 @@ pub(crate) enum RawPowerSyncError {
     InvalidCoreExtensionVersion { actual: String },
     #[error("Internal error while converting JSON: {inner}")]
     JsonConversion { inner: serde_json::Error },
-    #[error("Internal error while converting JSON: {inner}")]
-    #[cfg(feature = "serde_path_to_error")]
-    JsonConversionWithPath {
-        inner: serde_path_to_error::Error<serde_json::Error>,
-    },
     #[error("Invalid PowerSync endpoint: {inner}")]
     InvalidPowerSyncEndpoint { inner: url::ParseError },
     #[error("HTTP error: {inner}")]

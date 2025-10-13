@@ -95,6 +95,10 @@ impl SyncStatusData {
         self.downloading.downloading.is_some()
     }
 
+    pub fn download_error(&self) -> Option<&PowerSyncError> {
+        self.download_error.as_ref()
+    }
+
     /// Status information for a stream, if it's a stream that is currently tracked by the sync
     /// client.
     pub fn for_stream<'a, 'b>(

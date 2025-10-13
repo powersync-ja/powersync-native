@@ -70,6 +70,17 @@ impl SyncCoordinator {
         receive
     }
 
+    fn obtain_channel<T>(
+        slot: &RwLock<Option<Sender<AsyncRequest<T>>>>,
+    ) -> Sender<AsyncRequest<T>> {
+        let slot = slot.read().unwrap();
+        let Some(slot) = &*slot else {
+            panic!("Actor has not been registered");
+        };
+
+        slot.clone()
+    }
+
     pub fn receive_download_commands(&self) -> Receiver<AsyncRequest<DownloadActorCommand>> {
         Self::install_actor_channel(&self.control_downloads)
     }
@@ -79,10 +90,7 @@ impl SyncCoordinator {
     }
 
     async fn download_actor_request(&self, cmd: DownloadActorCommand) {
-        let downloads = self.control_downloads.read().unwrap();
-        let Some(downloads) = &*downloads else {
-            panic!("Download actor has not been registered");
-        };
+        let downloads = Self::obtain_channel(&self.control_downloads);
 
         let (request, response) = AsyncRequest::new(cmd);
         downloads

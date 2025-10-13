@@ -2,7 +2,7 @@ use std::{str::FromStr, sync::Arc};
 
 use futures_lite::{AsyncBufReadExt, Stream, StreamExt, stream};
 use http_client::{
-    HttpClient, Request, Response,
+    Request, Response,
     http_types::{Mime, StatusCode},
 };
 use serde::Deserialize;
@@ -34,12 +34,7 @@ pub fn sync_stream(
         );
         request.set_body(request_body);
 
-        let response = db
-            .env
-            .client
-            .send(request)
-            .await
-            .map_err(|e| RawPowerSyncError::Http { inner: e })?;
+        let response = db.env.client.send(request).await?;
         check_ok(&response)?;
 
         Ok::<Response, PowerSyncError>(response)
@@ -71,12 +66,7 @@ pub async fn write_checkpoint(
         "application/vnd.powersync.bson-stream;q=0.9,application/x-ndjson;q=0.8",
     );
 
-    let mut response = db
-        .env
-        .client
-        .send(request)
-        .await
-        .map_err(|e| RawPowerSyncError::Http { inner: e })?;
+    let mut response = db.env.client.send(request).await?;
     check_ok(&response)?;
 
     #[derive(Deserialize)]
@@ -120,7 +110,7 @@ fn response_to_lines(
             if mime.basetype() == "application"
                 && mime.subtype() == "vnd.powersync.bson-stream" =>
         {
-            false
+            true
         }
         _ => false,
     };

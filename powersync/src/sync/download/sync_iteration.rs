@@ -189,12 +189,7 @@ impl DownloadEvent {
                 PowerSyncError::argument_error("Could not read powersync_control instructions")
             })?;
 
-            if cfg!(feature = "serde_path_to_error") {
-                let jd = &mut serde_json::Deserializer::from_str(instructions);
-                serde_path_to_error::deserialize(jd)?
-            } else {
-                serde_json::from_str(&instructions)?
-            }
+            serde_json::from_str(&instructions)?
         };
 
         tx.commit()?;

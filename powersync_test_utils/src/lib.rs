@@ -40,7 +40,7 @@ impl DatabaseTest {
 
         let db = self.dir.path().to_path_buf().join("test.db");
         let pool = ConnectionPool::open(db).expect("should open pool");
-        PowerSyncEnvironment::custom(Box::new(self.http.clone().client()), pool)
+        PowerSyncEnvironment::custom(Arc::new(self.http.clone().client()), pool)
     }
 
     pub fn test_dir_database(&self) -> PowerSyncDatabase {
@@ -52,7 +52,7 @@ impl DatabaseTest {
         let conn = Connection::open_in_memory().expect("should open connection");
 
         PowerSyncEnvironment::custom(
-            Box::new(self.http.clone().client()),
+            Arc::new(self.http.clone().client()),
             ConnectionPool::single_connection(conn),
         )
     }

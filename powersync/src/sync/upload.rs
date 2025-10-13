@@ -46,19 +46,25 @@ impl UploadActor {
         }
     }
 
-    fn connected_state(&self, connector: Arc<dyn BackendConnector>) -> ConnectedUploadActor {
+    fn connected_state(
+        db: &Arc<InnerPowerSyncState>,
+        connector: Arc<dyn BackendConnector>,
+    ) -> ConnectedUploadActor {
         let mut tables = HashSet::new();
         tables.insert("ps_crud".to_string());
 
-        let stream = self.db.env.pool.update_notifiers().listen(false, tables);
+        let stream = db.env.pool.update_notifiers().listen(false, tables);
         ConnectedUploadActor {
             connector,
             crud_stream: stream.boxed(),
         }
     }
 
-    async fn state_transition_from_command_while_uploading(&self) -> Option<UploadActorState> {
-        match self.commands.recv().await {
+    async fn state_transition_from_command_while_uploading(
+        commands: &async_channel::Receiver<AsyncRequest<UploadActorCommand>>,
+        db: &Arc<InnerPowerSyncState>,
+    ) -> Option<UploadActorState> {
+        match commands.recv().await {
             Ok(command) => match command.command {
                 UploadActorCommand::TriggerCrudUpload => {
                     // Already in progress, don't start another.
@@ -66,7 +72,9 @@ impl UploadActor {
                 }
                 UploadActorCommand::Connect(connector) => {
                     // TODO: Only abort if the connector has changed?
-                    Some(UploadActorState::Connected(self.connected_state(connector)))
+                    Some(UploadActorState::Connected(Self::connected_state(
+                        db, connector,
+                    )))
                 }
                 UploadActorCommand::Disconnect => Some(UploadActorState::Idle),
             },
@@ -91,7 +99,7 @@ impl UploadActor {
                 match command.command {
                     UploadActorCommand::Connect(connector) => {
                         let _ = command.response.send(());
-                        UploadActorState::Connected(self.connected_state(connector))
+                        UploadActorState::Connected(Self::connected_state(&self.db, connector))
                     }
                     UploadActorCommand::TriggerCrudUpload => {
                         // We can't upload because we're not connector
@@ -124,7 +132,7 @@ impl UploadActor {
 
                     match command.command {
                         UploadActorCommand::Connect(connector) => Transition::Abort(
-                            UploadActorState::Connected(self.connected_state(connector)),
+                            UploadActorState::Connected(Self::connected_state(&self.db, connector)),
                         ),
                         UploadActorCommand::TriggerCrudUpload => Transition::StartUpload,
                         UploadActorCommand::Disconnect => Transition::Abort(UploadActorState::Idle),
@@ -140,7 +148,8 @@ impl UploadActor {
                 // A state transition can happen when the current upload is finished or when we
                 // receive a disconnect call.
 
-                let request = self.state_transition_from_command_while_uploading();
+                let request =
+                    Self::state_transition_from_command_while_uploading(&self.commands, &self.db);
 
                 let upload_done = async {
                     let (result, state) = result.await;
@@ -173,7 +182,8 @@ impl UploadActor {
             UploadActorState::WaitingForReconnect { ref mut timeout } => {
                 // Either the timeout expires, in which case we reconnect, or a disconnect is
                 // requested.
-                let request = self.state_transition_from_command_while_uploading();
+                let request =
+                    Self::state_transition_from_command_while_uploading(&self.commands, &self.db);
 
                 let timeout_expired = async {
                     let state = timeout.await;
