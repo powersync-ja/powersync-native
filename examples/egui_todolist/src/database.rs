@@ -3,8 +3,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use http_client::{HttpClient, h1::H1Client, http_types::Request};
 use powersync::{
-    BackendConnector, ConnectionPool, PowerSyncCredentials, PowerSyncDatabase,
-    PowerSyncEnvironment, SyncOptions,
+    BackendConnector, ConnectionPool, PowerSyncCredentials, PowerSyncDatabase, SyncOptions,
+    env::PowerSyncEnvironment,
     error::PowerSyncError,
     schema::{Column, Schema, Table},
 };
@@ -86,8 +86,11 @@ impl TodoDatabase {
     pub fn new(rt: &Runtime) -> Self {
         let conn = Connection::open_in_memory().expect("should open connection");
         let client = Arc::new(H1Client::new());
-        let env =
-            PowerSyncEnvironment::custom(client.clone(), ConnectionPool::single_connection(conn));
+        let env = PowerSyncEnvironment::custom(
+            client.clone(),
+            ConnectionPool::single_connection(conn),
+            Box::new(PowerSyncEnvironment::default_timer()),
+        );
         let mut schema = Schema::default();
         schema.tables.push(TodoList::schema());
         schema.tables.push(TodoEntry::schema());

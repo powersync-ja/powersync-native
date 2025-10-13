@@ -10,7 +10,7 @@ env_logger = "0.11.8"
 futures-lite = "2.6.1"
 http-client = "6.5.3"
 log = "0.4.28"
-powersync = { path = "../../powersync" }
+powersync = { path = "../../powersync", features = ["tokio"] }
 rusqlite = { version = "0.37.0", features = ["load_extension", "bundled"] }
 serde = "1.0.228"
 tokio = { version = "1.47.1", features = ["rt-multi-thread", "net"] }

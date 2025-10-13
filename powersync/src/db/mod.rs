@@ -3,11 +3,12 @@ use std::sync::Arc;
 use futures_lite::{Stream, StreamExt};
 
 use crate::{
-    CrudTransaction, PowerSyncEnvironment, SyncOptions,
+    CrudTransaction, SyncOptions,
     db::{
         crud::CrudTransactionStream, internal::InnerPowerSyncState, pool::LeasedConnection,
         streams::SyncStream,
     },
+    env::PowerSyncEnvironment,
     error::PowerSyncError,
     schema::Schema,
     sync::{download::DownloadActor, status::SyncStatusData, upload::UploadActor},

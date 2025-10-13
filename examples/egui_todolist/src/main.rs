@@ -1,5 +1,5 @@
 use eframe::egui;
-use powersync::PowerSyncEnvironment;
+use powersync::env::PowerSyncEnvironment;
 
 use crate::ui::TodoListApp;
 

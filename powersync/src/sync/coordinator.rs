@@ -1,4 +1,4 @@
-use std::sync::RwLock;
+use std::{sync::RwLock, time::Duration};
 
 use async_channel::{Receiver, Sender};
 use async_oneshot::oneshot;
@@ -33,6 +33,7 @@ impl<T> AsyncRequest<T> {
 pub struct SyncCoordinator {
     control_downloads: RwLock<Option<Sender<AsyncRequest<DownloadActorCommand>>>>,
     control_uploads: RwLock<Option<Sender<AsyncRequest<UploadActorCommand>>>>,
+    pub(crate) retry_delay: Option<Duration>,
 }
 
 impl SyncCoordinator {

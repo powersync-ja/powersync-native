@@ -9,10 +9,10 @@ use futures_lite::{FutureExt, Stream, StreamExt, ready};
 use rusqlite::{Connection, params};
 
 use crate::{
-    PowerSyncEnvironment,
     db::{
         core_extension::CoreExtensionVersion, pool::LeasedConnection, streams::SyncStreamTracker,
     },
+    env::PowerSyncEnvironment,
     error::PowerSyncError,
     schema::Schema,
     sync::{MAX_OP_ID, coordinator::SyncCoordinator, status::SyncStatus, status::SyncStatusData},
@@ -108,7 +108,9 @@ impl InnerPowerSyncState {
     }
 
     pub async fn sync_iteration_delay(&self) {
-        todo!()
+        if let Some(delay) = self.sync.retry_delay {
+            self.env.timer.delay_once(delay).await
+        }
     }
 
     pub fn watch_status<'a>(&'a self) -> impl Stream<Item = Arc<SyncStatusData>> + 'a {

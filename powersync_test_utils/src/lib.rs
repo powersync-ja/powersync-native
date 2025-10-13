@@ -3,6 +3,7 @@ use std::{sync::Arc, vec};
 use async_executor::Executor;
 use log::LevelFilter;
 use powersync::{
+    env::{PowerSyncEnvironment, Timer},
     schema::{Column, Schema, Table},
     *,
 };
@@ -40,7 +41,7 @@ impl DatabaseTest {
 
         let db = self.dir.path().to_path_buf().join("test.db");
         let pool = ConnectionPool::open(db).expect("should open pool");
-        PowerSyncEnvironment::custom(Arc::new(self.http.clone().client()), pool)
+        self.env(pool)
     }
 
     pub fn test_dir_database(&self) -> PowerSyncDatabase {
@@ -51,14 +52,32 @@ impl DatabaseTest {
         PowerSyncEnvironment::powersync_auto_extension().expect("should load core extension");
         let conn = Connection::open_in_memory().expect("should open connection");
 
-        PowerSyncEnvironment::custom(
-            Arc::new(self.http.clone().client()),
-            ConnectionPool::single_connection(conn),
-        )
+        self.env(ConnectionPool::single_connection(conn))
     }
 
     pub fn in_memory_database(&self) -> PowerSyncDatabase {
         return PowerSyncDatabase::new(self.in_memory(), Self::default_schema());
+    }
+
+    fn env(&self, pool: ConnectionPool) -> PowerSyncEnvironment {
+        PowerSyncEnvironment::powersync_auto_extension().expect("should load core extension");
+
+        struct DisabledTimer;
+
+        impl Timer for DisabledTimer {
+            fn delay_once(
+                &self,
+                _duration: std::time::Duration,
+            ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+                panic!("Tests should not run into a delay")
+            }
+        }
+
+        PowerSyncEnvironment::custom(
+            Arc::new(self.http.clone().client()),
+            pool,
+            Box::new(DisabledTimer),
+        )
     }
 
     pub fn default_schema() -> Schema<'static> {
