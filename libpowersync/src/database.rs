@@ -1,0 +1,102 @@
+use std::ops::Deref;
+use std::ffi::{c_char, c_void, CStr, CString};
+use std::ptr::null;
+use std::sync::Arc;
+use futures_lite::future;
+use http_client::isahc::IsahcClient;
+use rusqlite::Connection;
+use rusqlite::ffi::sqlite3;
+use powersync::{ConnectionPool, InnerPowerSyncState, LeasedConnection, PowerSyncDatabase};
+use powersync::env::PowerSyncEnvironment;
+use powersync::error::PowerSyncError;
+use powersync::schema::Schema;
+use crate::error::{PowerSyncResultCode, LAST_ERROR};
+
+fn create_db(pool: ConnectionPool) -> PowerSyncDatabase {
+    let env = PowerSyncEnvironment::custom(
+        Arc::new(IsahcClient::new()),
+        pool,
+        Box::new(PowerSyncEnvironment::async_io_timer())
+    );
+
+    let schema = Schema::default();
+    PowerSyncDatabase::new(env, schema)
+}
+
+#[repr(C)]
+struct RawPowerSyncDatabase {
+    db: *mut InnerPowerSyncState, // *const InnerPowerSyncState
+}
+
+impl RawPowerSyncDatabase {
+    unsafe fn as_db(&self) -> PowerSyncDatabase {
+        unsafe { PowerSyncDatabase::interpret_raw(self.db) }
+    }
+}
+
+struct RawConnectionLease<'a> {
+    lease: Box<dyn LeasedConnection + 'a>
+}
+
+#[repr(C)]
+struct ConnectionLeaseResult<'a> {
+    sqlite3: *mut sqlite3,
+    lease: *mut RawConnectionLease<'a>,
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn powersync_db_in_memory(out_db: &mut RawPowerSyncDatabase) -> PowerSyncResultCode {
+    ps_try!(PowerSyncEnvironment::powersync_auto_extension());
+    let conn = ps_try!(Connection::open_in_memory().map_err(PowerSyncError::from));
+    let raw = create_db(ConnectionPool::single_connection(conn)).into_raw();
+
+    *out_db = RawPowerSyncDatabase {
+        db: raw as *mut _
+    };
+    PowerSyncResultCode::OK
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn powersync_db_reader<'a>(db: &'a InnerPowerSyncState, out_lease: &mut ConnectionLeaseResult<'a>) -> PowerSyncResultCode {
+    let reader = ps_try!(future::block_on(db.reader()));
+
+    out_lease.sqlite3 = unsafe { reader.deref().handle() };
+    out_lease.lease = Box::into_raw(Box::new(RawConnectionLease { lease: Box::new(reader) }));
+    PowerSyncResultCode::OK
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn powersync_db_writer<'a>(db: &'a InnerPowerSyncState, out_lease: &mut ConnectionLeaseResult<'a>) -> PowerSyncResultCode {
+    let writer = ps_try!(future::block_on(db.writer()));
+
+    out_lease.sqlite3 = unsafe { writer.deref().handle() };
+    out_lease.lease = Box::into_raw(Box::new(RawConnectionLease { lease: Box::new(writer) }));
+    PowerSyncResultCode::OK
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn powersync_db_return_lease(lease: *mut RawConnectionLease) {
+    let lease = unsafe{ Box::from_raw(lease) };
+    drop(lease);
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn powersync_last_error_desc() -> *mut c_char {
+    if let Some(err) = LAST_ERROR.take() {
+        CString::into_raw(CString::new(format!("{}", err)).unwrap())
+    } else {
+        null()
+    }.cast_mut()
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn powersync_free_str(str: *mut c_char) {
+    drop(unsafe { CString::from_raw(str) });
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn powersync_db_free(db: RawPowerSyncDatabase) {
+    unsafe {
+        PowerSyncDatabase::drop_raw(db.db.cast());
+    }
+}
