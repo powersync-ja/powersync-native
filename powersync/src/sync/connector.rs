@@ -3,6 +3,8 @@ use url::Url;
 
 use crate::error::{PowerSyncError, RawPowerSyncError};
 
+/// A backend connector is responsible for upload local writes as well as resolving JWTs used to
+/// connect to the PowerSync service.
 #[async_trait]
 pub trait BackendConnector: Send + Sync {
     async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError>;

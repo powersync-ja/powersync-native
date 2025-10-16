@@ -15,6 +15,8 @@ use crate::{
     util::BsonObjects,
 };
 
+/// Requests a stream of [DownloadEvent]s (more specifically text or binary lines) by opening a
+/// connection to the PowerSync service.
 pub fn sync_stream(
     db: Arc<InnerPowerSyncState>,
     auth: PowerSyncCredentials,
@@ -49,6 +51,7 @@ pub fn sync_stream(
     })
 }
 
+/// Requests a write checkpoint from the sync service.
 pub async fn write_checkpoint(
     db: &InnerPowerSyncState,
     client_id: &str,
@@ -97,6 +100,10 @@ fn check_ok(response: &Response) -> Result<(), PowerSyncError> {
     }
 }
 
+/// Reads sync lines from an HTTP response stream.
+///
+/// For JSON responses, this splits at newline chars. For BSON responses, this tracks the length
+/// prefix to split at objects.
 fn response_to_lines(
     response: Result<Response, PowerSyncError>,
 ) -> impl Stream<Item = Result<DownloadEvent, PowerSyncError>> {

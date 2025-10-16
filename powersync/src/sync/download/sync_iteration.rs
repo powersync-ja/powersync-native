@@ -116,10 +116,7 @@ impl DownloadClient {
     async fn receive_command(
         channel: &async_channel::Receiver<DownloadEvent>,
     ) -> Result<DownloadEvent, PowerSyncError> {
-        Ok(match channel.recv().await {
-            Ok(event) => event,
-            Err(_) => DownloadEvent::Stop,
-        })
+        Ok(channel.recv().await.unwrap_or(DownloadEvent::Stop))
     }
 
     async fn receive_on_stream(
@@ -138,21 +135,23 @@ impl DownloadClient {
 /// included.
 #[derive(Debug)]
 pub enum DownloadEvent {
+    /// `connect()` has been called and we need to start establishing a connection.
     Start(StartDownloadIteration),
+    /// `disconnect()` has been called or the token has expired.
     Stop,
-    TextLine {
-        data: String,
-    },
-    BinaryLine {
-        data: Vec<u8>,
-    },
+    /// A textual JSON sync line has been received from the service.
+    TextLine { data: String },
+    /// A binary BSON sync line has been received from the service.
+    BinaryLine { data: Vec<u8> },
     /// A CRUD upload was completed, so the client can re-try applying data.
     CompletedUpload,
+    /// HTTP response headers for the sync response have been received, meaning that the sync status
+    /// can be set to connected.
     ConnectionEstablished,
+    /// The sync response stream has ended.
     ResponseStreamEnd,
-    UpdateSubscriptions {
-        keys: Vec<StreamKey>,
-    },
+    /// Active subscriptions for the application have changed, which might require a reconnect.
+    UpdateSubscriptions { keys: Vec<StreamKey> },
 }
 
 impl DownloadEvent {
