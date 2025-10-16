@@ -29,7 +29,7 @@ impl PowerSyncError {
 
 impl From<SqliteError> for PowerSyncError {
     fn from(value: SqliteError) -> Self {
-        return RawPowerSyncError::Sqlite { inner: value }.into();
+        RawPowerSyncError::Sqlite { inner: value }.into()
     }
 }
 
@@ -47,9 +47,9 @@ impl From<http_client::Error> for PowerSyncError {
 
 impl From<RawPowerSyncError> for PowerSyncError {
     fn from(value: RawPowerSyncError) -> Self {
-        return PowerSyncError {
+        PowerSyncError {
             inner: Arc::new(value),
-        };
+        }
     }
 }
 

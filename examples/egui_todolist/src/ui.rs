@@ -45,7 +45,7 @@ impl TodoListApp {
             rt,
             shared: Arc::new(SharedTodoListState {
                 sync_state: Mutex::new(db.db.status()),
-                db: db,
+                db,
                 lists: Default::default(),
                 selected_list: Default::default(),
             }),
@@ -74,7 +74,7 @@ impl eframe::App for TodoListApp {
 
             self.rt.spawn(async move {
                 let mut stream = state.db.db.watch_tables(true, ["lists"]);
-                while let Some(_) = stream.next().await {
+                while stream.next().await.is_some() {
                     let reader = state.db.db.reader().await.expect("get reader");
                     let items = TodoList::fetch_all(&reader).expect("fetch lists");
 
@@ -107,11 +107,9 @@ impl eframe::App for TodoListApp {
                         let state = self.shared.clone();
                         self.rt.spawn(async move { state.db.disconnect().await });
                     }
-                } else {
-                    if ui.button("Connect").clicked() {
-                        let state = self.shared.clone();
-                        self.rt.spawn(async move { state.db.connect().await });
-                    }
+                } else if ui.button("Connect").clicked() {
+                    let state = self.shared.clone();
+                    self.rt.spawn(async move { state.db.connect().await });
                 }
             });
 
@@ -157,16 +155,16 @@ impl<'a> TodoAppContent<'a> {
                 let _subscription = stream.subscribe().await.unwrap();
 
                 let mut stream = state.db.db.watch_tables(true, ["todos"]);
-                while let Some(_) = stream.next().await {
+                while stream.next().await.is_some() {
                     let reader = state.db.db.reader().await.expect("get reader");
                     let items = TodoEntry::fetch_in_list(&reader, &list_id).expect("fetch todos");
 
                     let mut guard = state.selected_list.lock().unwrap();
-                    if let Some(selected) = &mut *guard {
-                        if selected.id == list_id {
-                            selected.items = items;
-                            ctx.request_repaint();
-                        }
+                    if let Some(selected) = &mut *guard
+                        && selected.id == list_id
+                    {
+                        selected.items = items;
+                        ctx.request_repaint();
                     }
                 }
             }
@@ -175,7 +173,7 @@ impl<'a> TodoAppContent<'a> {
         *self.selected_list = Some(SelectedTodoList {
             id: list.id.clone(),
             name: list.name.clone(),
-            stream_params: stream_params,
+            stream_params,
             items: vec![],
             task,
         });

@@ -29,7 +29,7 @@ fn main() {
 
     println!("Downloading {binary:?} into {out:?}");
     let response = reqwest::blocking::get(binary.url).expect("Failed to download core extension.");
-    if (!response.status().is_success()) {
+    if !response.status().is_success() {
         panic!(
             "Could not download core extension: {}.",
             response.status().as_str()

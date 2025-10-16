@@ -22,8 +22,8 @@ pub struct DatabaseTest {
     pub ex: Executor<'static>,
 }
 
-impl DatabaseTest {
-    pub fn new() -> Self {
+impl Default for DatabaseTest {
+    fn default() -> Self {
         let _ = env_logger::builder()
             .filter_level(LevelFilter::max())
             .is_test(true)
@@ -35,6 +35,12 @@ impl DatabaseTest {
             ex: Executor::new(),
         }
     }
+}
+
+impl DatabaseTest {
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn in_test_dir(&self) -> PowerSyncEnvironment {
         PowerSyncEnvironment::powersync_auto_extension().expect("should load core extension");
@@ -45,7 +51,7 @@ impl DatabaseTest {
     }
 
     pub fn test_dir_database(&self) -> PowerSyncDatabase {
-        return PowerSyncDatabase::new(self.in_test_dir(), Self::default_schema());
+        PowerSyncDatabase::new(self.in_test_dir(), Self::default_schema())
     }
 
     pub fn in_memory(&self) -> PowerSyncEnvironment {
@@ -56,7 +62,7 @@ impl DatabaseTest {
     }
 
     pub fn in_memory_database(&self) -> PowerSyncDatabase {
-        return PowerSyncDatabase::new(self.in_memory(), Self::default_schema());
+        PowerSyncDatabase::new(self.in_memory(), Self::default_schema())
     }
 
     fn env(&self, pool: ConnectionPool) -> PowerSyncEnvironment {

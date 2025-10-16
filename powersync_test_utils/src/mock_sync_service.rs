@@ -24,8 +24,8 @@ pub struct MockSyncService {
     pub write_checkpoints: Mutex<Box<dyn Fn() -> WriteCheckpointResponse + Send>>,
 }
 
-impl MockSyncService {
-    pub fn new() -> Self {
+impl Default for MockSyncService {
+    fn default() -> Self {
         let (send_request, recv_request) = async_channel::unbounded();
 
         Self {
@@ -35,6 +35,12 @@ impl MockSyncService {
                 WriteCheckpointResponse::new("10".to_string())
             })),
         }
+    }
+}
+
+impl MockSyncService {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn client(self: Arc<Self>) -> impl HttpClient {
@@ -93,12 +99,11 @@ impl MockSyncService {
         let mut response = Response::new(StatusCode::Ok);
         response.set_content_type(Mime::from_str("application/json").unwrap());
         response.set_body(serde_json::to_string(&data).unwrap());
-        return response;
+        response
     }
 
     fn generate_bad_request() -> Response {
-        let response = Response::new(StatusCode::BadRequest);
-        return response;
+        Response::new(StatusCode::BadRequest)
     }
 }
 
@@ -176,8 +181,8 @@ impl AsyncRead for MockSyncLinesResponse {
         let mut this = self.project();
 
         // Find a pending line to emit.
-        let line = loop {
-            break match &mut this.pending_line {
+        let line = {
+            match &mut this.pending_line {
                 Some(line) => line,
                 None => {
                     let line = ready!(this.receive.poll_next(cx));
@@ -195,7 +200,7 @@ impl AsyncRead for MockSyncLinesResponse {
                         }
                     }
                 }
-            };
+            }
         };
 
         let available = line.line.len() - line.offset;
@@ -207,7 +212,7 @@ impl AsyncRead for MockSyncLinesResponse {
         if written == available {
             *this.pending_line = None;
         }
-        return Poll::Ready(Ok(written));
+        Poll::Ready(Ok(written))
     }
 }
 
@@ -215,13 +220,13 @@ impl AsyncBufRead for MockSyncLinesResponse {
     fn poll_fill_buf(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<&[u8]>> {
+    ) -> Poll<std::io::Result<&[u8]>> {
         let mut this = self.project();
 
         // Find a pending line to emit.
-        let line = loop {
+        let line = {
             let pending = this.pending_line;
-            break match pending {
+            match pending {
                 Some(line) => line,
                 None => {
                     let line = ready!(this.receive.poll_next(cx));
@@ -239,7 +244,7 @@ impl AsyncBufRead for MockSyncLinesResponse {
                         }
                     }
                 }
-            };
+            }
         };
 
         let available = line.line.len() - line.offset;
@@ -247,7 +252,7 @@ impl AsyncBufRead for MockSyncLinesResponse {
 
         let data = &line.line[line.offset..];
 
-        return Poll::Ready(Ok(data));
+        Poll::Ready(Ok(data))
     }
 
     fn consume(self: std::pin::Pin<&mut Self>, amt: usize) {

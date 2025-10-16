@@ -34,7 +34,7 @@ impl<R: AsyncBufRead> BsonObjects<R> {
         remaining: &mut RemainingBytes,
         mut buf: &[u8],
     ) -> (Poll<Option<std::io::Result<Vec<u8>>>>, usize) {
-        if buf.len() == 0 {
+        if buf.is_empty() {
             // End of stream. This is an error if we were in the middle of reading an object.
             return if remaining.is_idle() {
                 (Poll::Ready(None), 0)
@@ -54,7 +54,7 @@ impl<R: AsyncBufRead> BsonObjects<R> {
             let (read, switch_state) = remaining.consume(buf.len());
             let (taken, remaining_buf) = buf.split_at(read);
 
-            target.extend_from_slice(&taken);
+            target.extend_from_slice(taken);
             buf = remaining_buf;
             consumed += read;
 
@@ -84,7 +84,7 @@ impl<R: AsyncBufRead> BsonObjects<R> {
                     RemainingBytes::ForObject(_) => {
                         // Done reading the object => emit.
                         *remaining = RemainingBytes::default();
-                        let buf = std::mem::replace(target, Vec::new());
+                        let buf = std::mem::take(target);
                         Poll::Ready(Some(Ok(buf)))
                     }
                 }
@@ -132,16 +132,13 @@ impl RemainingBytes {
             RemainingBytes::ForObject(size) => size,
         };
         let readable = min(*remaining, max);
-        *remaining = *remaining - readable;
+        *remaining -= readable;
 
         (readable, *remaining == 0)
     }
 
     pub fn is_idle(&self) -> bool {
-        match self {
-            RemainingBytes::ForSize(4) => true,
-            _ => false,
-        }
+        matches!(self, RemainingBytes::ForSize(4))
     }
 }
 

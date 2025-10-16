@@ -335,13 +335,9 @@ impl<'a> CrudUpload<'a> {
         }
 
         let seq_before = Self::ps_crud_sequence(&reader)?;
-        Ok(if let Some(seq_before) = seq_before {
-            Some(PendingCheckpointRequest {
-                crud_sequence: seq_before,
-            })
-        } else {
-            None
-        })
+        Ok(seq_before.map(|seq_before| PendingCheckpointRequest {
+            crud_sequence: seq_before,
+        }))
     }
 
     const DUPLICATE_ITEM_WARNING: &'static str = "
