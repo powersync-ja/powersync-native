@@ -20,11 +20,19 @@ use crate::{
 };
 
 pub struct InnerPowerSyncState {
+    /// External dependencies (timers and HTTP clients) used to implement SDK functionality.
     pub env: PowerSyncEnvironment,
+    /// Whether the database has been initialized.
     did_initialize: SharedFuture<Result<(), PowerSyncError>>,
+    /// The schema passed to the database.
+    ///
+    /// This is forwarded to the sync client for raw tables.
     pub schema: Arc<Schema>,
+    /// A container for the current sync status.
     pub status: SyncStatus,
+    /// Manages async channels the different sync actors use for communication.
     pub sync: SyncCoordinator,
+    /// A collection of currently-referenced sync stream subscriptions.
     pub current_streams: SyncStreamTracker,
 }
 

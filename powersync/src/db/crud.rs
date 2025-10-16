@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 use crate::PowerSyncDatabase;
 use crate::error::{PowerSyncError, RawPowerSyncError};
 
-/// All local writes that were made in a specific transaction.
+/// All local writes that were made in a single SQLite transaction.
 pub struct CrudTransaction<'a> {
     pub(crate) db: &'a PowerSyncDatabase,
     pub last_item_id: i64,
@@ -58,7 +58,7 @@ pub struct CrudEntry {
     pub table: String,
     /// ID of the changed row.
     pub id: String,
-    /// An optional metadata string attached to this entry at the time the write has been issued.
+    /// An optional metadata string attached to this entry at the time the write was made.
     ///
     /// For tables where [Table::track_metadata] is enabled, a hidden `_metadata` column is added to
     /// this table that can be used during updates to attach a hint to the update thas is preserved
@@ -66,9 +66,9 @@ pub struct CrudEntry {
     pub metadata: Option<String>,
     /// Data associated with the change.
     ///
-    /// For PUT, this is contains all non-null columns of the row.
+    /// For PUT, this contains all non-null columns of the row.
     ///
-    /// For PATCH, this is contains the columns that changed.
+    /// For PATCH, this contains the columns that changed.
     ///
     /// For DELETE, this is null.
     pub data: Option<Map<String, Value>>,
@@ -121,9 +121,10 @@ pub enum UpdateType {
     Delete,
 }
 
-pub type Boxed<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+type Boxed<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pin_project! {
+    /// A [Stream] of completed transactions on a database.
     pub(crate) struct CrudTransactionStream<'a> {
         db: &'a PowerSyncDatabase,
         last_item_id: Option<i64>,

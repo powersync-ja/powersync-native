@@ -11,7 +11,6 @@ use pin_project_lite::pin_project;
 pin_project! {
     /// A [Stream] implementation splitting an underlying [AsyncBufRead] instance into unparsed BSON
     /// objects by extracting frame information from the length prefix.
-
     pub struct BsonObjects<R> {
         #[pin]
         reader:R,
@@ -21,6 +20,7 @@ pin_project! {
 }
 
 impl<R: AsyncBufRead> BsonObjects<R> {
+    /// Creates a [BsonObjects] stream from a source reader [R].
     pub fn new(reader: R) -> Self {
         Self {
             reader,
@@ -36,7 +36,7 @@ impl<R: AsyncBufRead> BsonObjects<R> {
     ) -> (Poll<Option<std::io::Result<Vec<u8>>>>, usize) {
         if buf.is_empty() {
             // End of stream. This is an error if we were in the middle of reading an object.
-            return if remaining.is_idle() {
+            return if remaining.is_at_object_boundary() {
                 (Poll::Ready(None), 0)
             } else {
                 (
@@ -65,7 +65,7 @@ impl<R: AsyncBufRead> BsonObjects<R> {
                 match remaining.clone() {
                     RemainingBytes::ForSize(_) => {
                         // Done reading size => transition to reading object. Each BSON object
-                        // starts with an little-endian 32-bit integer describing its size.
+                        // starts with a little-endian 32-bit integer describing its size.
                         assert_eq!(target.len(), 4);
 
                         let size = i32::from_le_bytes(target[0..4].try_into().unwrap());
@@ -121,7 +121,14 @@ impl<R: AsyncBufRead> Stream for BsonObjects<R> {
 
 #[derive(Clone)]
 pub enum RemainingBytes {
+    /// The stream is currently reading the size of the next BSON object.
+    ///
+    /// The attached value is the amount of bytes remaining in the length, never more than 4.
     ForSize(usize),
+    /// The stream is currently reading the contents of a BSON object.
+    ///
+    /// The attached value is the amount of bytes remaining in the object, including the trailing
+    /// zero byte.
     ForObject(usize),
 }
 
@@ -137,7 +144,7 @@ impl RemainingBytes {
         (readable, *remaining == 0)
     }
 
-    pub fn is_idle(&self) -> bool {
+    pub fn is_at_object_boundary(&self) -> bool {
         matches!(self, RemainingBytes::ForSize(4))
     }
 }
@@ -160,7 +167,7 @@ mod test {
         let mut source = BsonObjects::new(source.as_slice());
 
         let next = future::block_on(async { source.next().await });
-        assert!(matches!(next, None));
+        assert!(next.is_none());
     }
 
     #[test]
@@ -182,7 +189,7 @@ mod test {
         assert_eq!(&bytes, &source[5..11]);
 
         let next = future::block_on(async { bson.next().await });
-        assert!(matches!(next, None));
+        assert!(next.is_none());
     }
 
     #[test]

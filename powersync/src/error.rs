@@ -18,12 +18,8 @@ pub struct PowerSyncError {
 }
 
 impl PowerSyncError {
-    pub fn argument_error(desc: impl Into<Cow<'static, str>>) -> Self {
+    pub(crate) fn argument_error(desc: impl Into<Cow<'static, str>>) -> Self {
         RawPowerSyncError::ArgumentError { desc: desc.into() }.into()
-    }
-
-    pub fn invalid_core_extension_version(actual: String) -> Self {
-        RawPowerSyncError::InvalidCoreExtensionVersion { actual }.into()
     }
 }
 
@@ -64,31 +60,35 @@ impl Error for PowerSyncError {}
 /// A structured enumeration of possible errors that can occur in the core extension.
 #[derive(Error, Debug)]
 pub(crate) enum RawPowerSyncError {
-    /// A user (e.g. the one calling a PowerSync function, likely an SDK) has provided invalid
-    /// arguments.
+    /// An invalid argument was passed to the PowerSync SDK.
     ///
-    /// This always indicates an error in how the core extension is used.
+    /// This is used when the schema passed to the database is invalid.
     #[error("invalid argument: {desc}")]
     ArgumentError { desc: Cow<'static, str> },
-    /// A user (e.g. the one calling a PowerSync function, likely an SDK) has provided invalid
-    /// arguments.
-    ///
-    /// This always indicates an error in how the core extension is used.
+    /// An inner SQLite call failed.
     #[error("SQLite: {inner}")]
     Sqlite { inner: SqliteError },
+    /// Reading a value from SQLite failed.
     #[error("Reading from SQLite: {inner}")]
     FromSql {
         #[from]
         inner: FromSqlError,
     },
+    /// The version of the core extension linked into the application is unexpected.
+    ///
+    /// This should virtually never happen because the native SDK is responsible for linking it.
     #[error("Invalid version of core extension: {actual}")]
     InvalidCoreExtensionVersion { actual: String },
+    /// Wraps `serde_json` errors.
     #[error("Internal error while converting JSON: {inner}")]
     JsonConversion { inner: serde_json::Error },
+    /// Used when a backend connector returns an invalid URI as a service URL.
     #[error("Invalid PowerSync endpoint: {inner}")]
     InvalidPowerSyncEndpoint { inner: url::ParseError },
+    /// HTTP errors while downloading sync lines.
     #[error("HTTP error: {inner}")]
     Http { inner: http_client::Error },
+    /// A generic IO error that occurred in the SDK.
     #[error("IO error: {inner}")]
     IO {
         #[from]

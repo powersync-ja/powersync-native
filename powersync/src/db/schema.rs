@@ -31,7 +31,7 @@ pub struct Table {
     pub local_only: bool,
     /// Whether this is an insert-only table.
     pub insert_only: bool,
-    /// Whether to add a hiden `_metadata` column that will be enabled for updates to attach custom
+    /// Whether to add a hidden `_metadata` column that will be enabled for updates to attach custom
     /// information about writes that will be reported through crud entries.
     pub track_metadata: bool,
     /// When set, track old values of columns for CRUD entries.

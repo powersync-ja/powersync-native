@@ -2,9 +2,13 @@ use serde::{Deserialize, Serialize, de::Visitor};
 
 use crate::error::PowerSyncError;
 
+/// A priority assigned to a sync stream subscription.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct StreamPriority {
+    /// The number used t represent this priority in the protocol.
+    ///
+    /// Lower numbers indicate higher priorities, with zero being the highest-priority stream.
     number: i32,
 }
 

@@ -2,7 +2,7 @@ use std::{ffi::c_int, fmt::Display, str::FromStr};
 
 use rusqlite::{Connection, params};
 
-use crate::error::PowerSyncError;
+use crate::error::{PowerSyncError, RawPowerSyncError};
 
 #[link(name = "powersync_core", kind = "static")]
 unsafe extern "C" {
@@ -17,7 +17,8 @@ pub struct CoreExtensionVersion {
 }
 
 impl CoreExtensionVersion {
-    pub const MINIMUM: Self = Self::new(0, 4, 6);
+    /// The minimum version of the core extension supported by the native SDK.
+    pub const MINIMUM: Self = Self::new(0, 4, 7);
     pub const MAXIMUM_EXCLUSIVE: Self = Self::new(0, 5, 0);
 
     pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
@@ -30,11 +31,10 @@ impl CoreExtensionVersion {
 
     pub fn validate(&self) -> Result<(), PowerSyncError> {
         if self < &Self::MINIMUM || self >= &Self::MAXIMUM_EXCLUSIVE {
-            Err(PowerSyncError::invalid_core_extension_version(format!(
-                "Expected version ^{}, got {}",
-                Self::MINIMUM,
-                self
-            )))
+            Err(RawPowerSyncError::InvalidCoreExtensionVersion {
+                actual: format!("Expected version ^{}, got {}", Self::MINIMUM, self),
+            }
+            .into())
         } else {
             Ok(())
         }
@@ -60,17 +60,19 @@ impl FromStr for CoreExtensionVersion {
     type Err = PowerSyncError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut components = s
-            .split(['.', '/'])
-            .take(3)
-            .map(|s| s.parse::<u32>());
+        // Versions are formatted as `x.y.z/hash`.
+        let mut components = s.split(['.', '/']).take(3).map(|s| s.parse::<u32>());
 
         let mut next_component = || {
             components
                 .next()
-                .ok_or_else(|| PowerSyncError::invalid_core_extension_version(s.to_string()))
+                .ok_or_else(|| RawPowerSyncError::InvalidCoreExtensionVersion {
+                    actual: s.to_string(),
+                })
                 .and_then(|r| {
-                    r.map_err(|_| PowerSyncError::invalid_core_extension_version(s.to_string()))
+                    r.map_err(|_| RawPowerSyncError::InvalidCoreExtensionVersion {
+                        actual: s.to_string(),
+                    })
                 })
         };
 

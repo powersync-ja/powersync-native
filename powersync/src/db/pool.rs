@@ -49,6 +49,9 @@ impl ConnectionPool {
         Ok(Self::wrap_connections(writer, readers))
     }
 
+    /// Creates a pool backed by a single write ad multiple reader connections.
+    ///
+    /// Connections will be configured to use WAL mode.
     pub fn wrap_connections(
         writer: Connection,
         readers: impl IntoIterator<Item = Connection>,
@@ -71,6 +74,7 @@ impl ConnectionPool {
         }
     }
 
+    /// Creates a connection pool backed by a single sqlite connection.
     pub fn single_connection(conn: Connection) -> Self {
         Self {
             state: Arc::new(PoolState {
@@ -144,7 +148,7 @@ impl ConnectionPool {
     }
 
     pub async fn writer(&self) -> impl LeasedConnection {
-        return self.take_connection_async(true).await;
+        self.take_connection_async(true).await
     }
 
     pub fn writer_sync(&self) -> impl LeasedConnection {
@@ -152,7 +156,7 @@ impl ConnectionPool {
     }
 
     pub async fn reader(&self) -> impl LeasedConnection {
-        return self.take_connection_async(false).await;
+        self.take_connection_async(false).await
     }
 
     pub fn reader_sync(&self) -> impl LeasedConnection {
@@ -160,6 +164,9 @@ impl ConnectionPool {
     }
 }
 
+/// A temporary lease of a connection taken from the [ConnectionPool].
+///
+/// The connection is released into the pool when dropped.
 pub trait LeasedConnection: DerefMut<Target = Connection> {}
 
 #[derive(Clone, Deserialize)]
@@ -186,6 +193,7 @@ struct LeasedWriter<'a> {
 
 impl Drop for LeasedWriter<'_> {
     fn drop(&mut self) {
+        // Send update notifications for writes made on this connection while leased.
         let _ = self.pool.take_update_notifications(&self.connection);
     }
 }

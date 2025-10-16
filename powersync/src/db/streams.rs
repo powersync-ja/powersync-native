@@ -20,7 +20,7 @@ use crate::{
 
 /// Tracks all sync streams that currently have at least one active [StreamSubscription].
 #[derive(Default)]
-pub struct SyncStreamTracker {
+pub(crate) struct SyncStreamTracker {
     streams: Mutex<HashMap<StreamKey, Weak<StreamSubscriptionGroup>>>,
 }
 
@@ -94,17 +94,19 @@ impl<'a> SyncStream<'a> {
             let mut rows = stmt.query(params!["subscriptions", serialized])?;
 
             // Ignore results.
-            while (rows.next()?).is_some() {}
+            while rows.next()?.is_some() {}
         }
 
         writer.commit()?;
         Ok(())
     }
 
+    /// Subscribes to this sync stream with the default options.
     pub async fn subscribe(&self) -> Result<StreamSubscription, PowerSyncError> {
         self.subscribe_with(Default::default()).await
     }
 
+    /// Subscribes to this sync stream with custom options.
     pub async fn subscribe_with(
         &self,
         options: StreamSubscriptionOptions,
@@ -136,6 +138,7 @@ impl<'a> SyncStream<'a> {
         Ok(StreamSubscription { group: stream })
     }
 
+    /// Unsubscribes all subscriptions currently active on this sync stream.
     pub async fn unsubscribe_all(&self) -> Result<(), PowerSyncError> {
         let desc: StreamDescription = self.into();
 
@@ -171,11 +174,17 @@ pub struct StreamSubscriptionOptions {
 }
 
 impl StreamSubscriptionOptions {
+    /// Configures a time-to-live for the sync stream.
+    ///
+    /// When all [StreamSubscription]s for a sync stream are dropped, PowerSync normally stops
+    /// requesting the stream after a while. The duration these streams are kept active can be
+    /// configured here.
     pub fn with_ttl(&mut self, ttl: Duration) -> &mut Self {
         self.ttl = Some(ttl);
         self
     }
 
+    /// Request a subscription to the sync stream with a given [StreamPriority].
     pub fn with_priority(&mut self, priority: StreamPriority) -> &mut Self {
         self.priority = Some(priority);
         self
