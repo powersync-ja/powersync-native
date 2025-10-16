@@ -24,11 +24,11 @@ pub struct StreamDescription<'a> {
     pub parameters: Option<&'a SerializedJsonObject>,
 }
 
-impl Into<StreamKey> for StreamDescription<'_> {
-    fn into(self) -> StreamKey {
+impl From<StreamDescription<'_>> for StreamKey {
+    fn from(val: StreamDescription<'_>) -> Self {
         StreamKey {
-            name: self.name.to_string(),
-            parameters: self.parameters.map(|obj| obj.to_owned()),
+            name: val.name.to_string(),
+            parameters: val.parameters.map(|obj| obj.to_owned()),
         }
     }
 }
@@ -72,7 +72,7 @@ impl<'a> StreamSubscriptionDescription<'a> {
     pub fn description(&'_ self) -> StreamDescription<'_> {
         StreamDescription {
             name: &self.core.name,
-            parameters: self.core.parameters.as_ref().map(|b| &**b),
+            parameters: self.core.parameters.as_deref(),
         }
     }
 
@@ -119,9 +119,9 @@ impl<'a> StreamSubscriptionDescription<'a> {
     }
 }
 
-impl<'a> Into<StreamDescription<'a>> for &'a StreamSubscriptionDescription<'a> {
-    fn into(self) -> StreamDescription<'a> {
-        self.description()
+impl<'a> From<&'a StreamSubscriptionDescription<'a>> for StreamDescription<'a> {
+    fn from(val: &'a StreamSubscriptionDescription<'a>) -> Self {
+        val.description()
     }
 }
 pub struct ChangedSyncSubscriptions(pub Vec<StreamKey>);

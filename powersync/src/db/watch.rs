@@ -6,7 +6,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll},
-    usize,
 };
 
 use event_listener::{Event, EventListener};
@@ -18,7 +17,7 @@ pub struct TableNotifiers {
 }
 
 impl TableNotifiers {
-    pub fn notify_updates<'a>(&self, updates: &HashSet<String>) {
+    pub fn notify_updates(&self, updates: &HashSet<String>) {
         let guard = self.active.lock().unwrap();
 
         for listener in &*guard {

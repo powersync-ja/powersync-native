@@ -38,8 +38,9 @@ impl ToOwned for SerializedJsonObject {
 
 impl Clone for Box<SerializedJsonObject> {
     fn clone(&self) -> Self {
-        let as_raw: &Box<RawValue> = unsafe { std::mem::transmute(self) };
-        SerializedJsonObject::from_owned_value(as_raw.clone())
+        let serialized: &SerializedJsonObject = self.as_ref();
+        let raw: &RawValue = serialized.as_ref();
+        SerializedJsonObject::from_owned_value(raw.to_owned())
     }
 }
 

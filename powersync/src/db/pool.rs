@@ -148,7 +148,7 @@ impl ConnectionPool {
     }
 
     pub fn writer_sync(&self) -> impl LeasedConnection {
-        return self.take_connection_sync(true);
+        self.take_connection_sync(true)
     }
 
     pub async fn reader(&self) -> impl LeasedConnection {
@@ -156,7 +156,7 @@ impl ConnectionPool {
     }
 
     pub fn reader_sync(&self) -> impl LeasedConnection {
-        return self.take_connection_sync(false);
+        self.take_connection_sync(false)
     }
 }
 
@@ -219,7 +219,7 @@ impl<'a> Deref for LeasedConnectionImpl<'a> {
 
     fn deref(&self) -> &Self::Target {
         match self {
-            LeasedConnectionImpl::Writer(writer) => &*writer.connection,
+            LeasedConnectionImpl::Writer(writer) => &writer.connection,
             LeasedConnectionImpl::Reader(reader) => unsafe {
                 // safety: This is initialized by default, and only uninitialized on Drop.
                 reader.connection.assume_init_ref()
@@ -231,7 +231,7 @@ impl<'a> Deref for LeasedConnectionImpl<'a> {
 impl<'a> DerefMut for LeasedConnectionImpl<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
-            LeasedConnectionImpl::Writer(writer) => &mut *writer.connection,
+            LeasedConnectionImpl::Writer(writer) => &mut writer.connection,
             LeasedConnectionImpl::Reader(reader) => unsafe {
                 // safety: This is initialized by default, and only uninitialized on Drop.
                 reader.connection.assume_init_mut()

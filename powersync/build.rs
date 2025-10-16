@@ -73,7 +73,6 @@ struct PowerSyncCoreBinary {
 
 #[derive(Debug)]
 struct ResolvedPowerSyncBinary {
-    filename: &'static str,
     hash_alg: &'static str,
     digest: &'static [u8],
     url: &'static str,
@@ -94,7 +93,6 @@ impl PowerSyncCoreBinary {
                 return ResolvedPowerSyncBinary {
                     hash_alg: alg,
                     digest,
-                    filename,
                     url,
                 };
             }

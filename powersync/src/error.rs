@@ -94,8 +94,6 @@ pub(crate) enum RawPowerSyncError {
         #[from]
         inner: io::Error,
     },
-    #[error("Internal error: {inner}")]
-    Internal { inner: Cow<'static, str> },
     #[error("The PowerSync service did not accept credentials returned by connector")]
     InvalidCredentials,
     #[error("Unexpected HTTP status code from PowerSync service: {code}")]

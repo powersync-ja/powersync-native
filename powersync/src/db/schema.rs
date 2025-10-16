@@ -50,7 +50,7 @@ impl Table {
     pub fn create(
         name: impl Into<SchemaString>,
         columns: Vec<Column>,
-        build: impl FnOnce(&mut Table) -> (),
+        build: impl FnOnce(&mut Table),
     ) -> Self {
         let mut table = Self {
             name: name.into(),

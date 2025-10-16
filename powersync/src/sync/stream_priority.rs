@@ -31,13 +31,13 @@ impl TryFrom<i32> for StreamPriority {
             ));
         }
 
-        return Ok(StreamPriority { number: value });
+        Ok(StreamPriority { number: value })
     }
 }
 
-impl Into<i32> for StreamPriority {
-    fn into(self) -> i32 {
-        self.number
+impl From<StreamPriority> for i32 {
+    fn from(val: StreamPriority) -> Self {
+        val.number
     }
 }
 

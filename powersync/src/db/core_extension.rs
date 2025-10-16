@@ -61,7 +61,7 @@ impl FromStr for CoreExtensionVersion {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut components = s
-            .split(|c| c == '.' || c == '/')
+            .split(['.', '/'])
             .take(3)
             .map(|s| s.parse::<u32>());
 

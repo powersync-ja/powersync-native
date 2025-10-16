@@ -25,7 +25,8 @@ pub enum Instruction {
         /// Whether the credentials currently used have expired.
         ///
         /// If false, this is a pre-fetch.
-        did_expire: bool,
+        #[serde(rename = "did_expire")]
+        _did_expire: bool,
     },
     // These are defined like this because deserializers in Kotlin can't support either an
     // object or a literal value
@@ -46,9 +47,12 @@ pub struct CloseSyncStream {
 
 #[derive(Deserialize, Debug)]
 pub enum LogSeverity {
-    DEBUG,
-    INFO,
-    WARNING,
+    #[serde(rename = "DEBUG")]
+    Debug,
+    #[serde(rename = "INFO")]
+    Info,
+    #[serde(rename = "WARNING")]
+    Warning,
 }
 
 /// Information about a progressing download.
@@ -83,9 +87,9 @@ pub struct ActiveStreamSubscription {
 #[derive(Deserialize, Clone, Copy, Debug)]
 pub struct Timestamp(pub i64);
 
-impl Into<SystemTime> for Timestamp {
-    fn into(self) -> SystemTime {
-        let since_epoch = Duration::from_secs(self.0 as u64);
+impl From<Timestamp> for SystemTime {
+    fn from(val: Timestamp) -> Self {
+        let since_epoch = Duration::from_secs(val.0 as u64);
         SystemTime::UNIX_EPOCH + since_epoch
     }
 }

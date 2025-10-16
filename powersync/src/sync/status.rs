@@ -4,7 +4,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    usize,
 };
 
 use event_listener::{Event, EventListener};
@@ -120,8 +119,7 @@ impl SyncStatusData {
         let key: StreamDescription<'b> = stream.into();
 
         for stream in &self.downloading.streams {
-            if stream.name == key.name && stream.parameters.as_ref().map(|e| &**e) == key.parameters
-            {
+            if stream.name == key.name && stream.parameters.as_deref() == key.parameters {
                 return Some(self.publish_stream_subscription(stream));
             }
         }
@@ -142,10 +140,10 @@ impl SyncStatusData {
         stream: &'a ActiveStreamSubscription,
     ) -> SyncStreamStatus<'a> {
         SyncStreamStatus {
-            progress: match self.downloading.downloading {
-                None => None,
-                Some(_) => Some(stream.progress.clone()),
-            },
+            progress: self
+                .downloading
+                .downloading
+                .map(|_| stream.progress.clone()),
             subscription: StreamSubscriptionDescription { core: stream },
         }
     }

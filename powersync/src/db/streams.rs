@@ -40,10 +40,10 @@ impl SyncStreamTracker {
     ) {
         let mut streams = self.streams.lock().unwrap();
 
-        if let Some(existing) = streams.get(key) {
-            if let Some(active) = existing.upgrade() {
-                return (active, None);
-            }
+        if let Some(existing) = streams.get(key)
+            && let Some(active) = existing.upgrade()
+        {
+            return (active, None);
         }
 
         let entry = Arc::new(StreamSubscriptionGroup {
@@ -94,7 +94,7 @@ impl<'a> SyncStream<'a> {
             let mut rows = stmt.query(params!["subscriptions", serialized])?;
 
             // Ignore results.
-            while let Some(_) = rows.next()? {}
+            while (rows.next()?).is_some() {}
         }
 
         writer.commit()?;
@@ -150,11 +150,11 @@ impl<'a> SyncStream<'a> {
     }
 }
 
-impl<'a> Into<StreamDescription<'a>> for &'a SyncStream<'a> {
-    fn into(self) -> StreamDescription<'a> {
+impl<'a> From<&'a SyncStream<'a>> for StreamDescription<'a> {
+    fn from(val: &'a SyncStream<'a>) -> Self {
         StreamDescription {
-            name: self.name,
-            parameters: match self.parameters.as_ref() {
+            name: val.name,
+            parameters: match val.parameters.as_ref() {
                 Some(params) => Some(&**params),
                 None => None,
             },
@@ -196,12 +196,11 @@ unsafe impl Sync for StreamSubscriptionGroup {
 impl Drop for StreamSubscriptionGroup {
     fn drop(&mut self) {
         let mut tracker = self.db.current_streams.streams.lock().unwrap();
-        if let Some(group) = tracker.get(&self.key) {
-            if let Some(key) = self.self_.take() {
-                if Weak::ptr_eq(&key, group) {
-                    tracker.remove(&self.key);
-                }
-            }
+        if let Some(group) = tracker.get(&self.key)
+            && let Some(key) = self.self_.take()
+            && Weak::ptr_eq(&key, group)
+        {
+            tracker.remove(&self.key);
         };
     }
 }
@@ -230,11 +229,11 @@ impl StreamSubscription {
     }
 }
 
-impl<'a> Into<StreamDescription<'a>> for &'a StreamSubscription {
-    fn into(self) -> StreamDescription<'a> {
+impl<'a> From<&'a StreamSubscription> for StreamDescription<'a> {
+    fn from(val: &'a StreamSubscription) -> Self {
         StreamDescription {
-            name: &self.group.key.name,
-            parameters: self.group.key.parameters.as_ref().map(|params| &**params),
+            name: &val.group.key.name,
+            parameters: val.group.key.parameters.as_deref(),
         }
     }
 }

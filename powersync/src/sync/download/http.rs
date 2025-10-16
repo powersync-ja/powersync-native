@@ -105,15 +105,8 @@ fn response_to_lines(
         Err(e) => return stream::once(Err::<DownloadEvent, PowerSyncError>(e)).boxed(),
     };
 
-    let is_bson = match response.content_type() {
-        Some(mime)
-            if mime.basetype() == "application"
-                && mime.subtype() == "vnd.powersync.bson-stream" =>
-        {
-            true
-        }
-        _ => false,
-    };
+    let is_bson = matches!(response.content_type(), Some(mime) if mime.basetype() == "application"
+                && mime.subtype() == "vnd.powersync.bson-stream");
 
     if is_bson {
         BsonObjects::new(response)

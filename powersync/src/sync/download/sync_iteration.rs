@@ -60,9 +60,9 @@ impl DownloadClient {
 
                 match instr {
                     Instruction::LogLine { severity, line } => match severity {
-                        LogSeverity::DEBUG => debug!("{}", line),
-                        LogSeverity::INFO => info!("{}", line),
-                        LogSeverity::WARNING => warn!("{}", line),
+                        LogSeverity::Debug => debug!("{}", line),
+                        LogSeverity::Info => info!("{}", line),
+                        LogSeverity::Warning => warn!("{}", line),
                     },
                     Instruction::UpdateSyncStatus { status } => {
                         self.db.status.update(|s| s.update_from_core(status))
@@ -80,7 +80,7 @@ impl DownloadClient {
                         // Trigger a crud upload after establishing a sync stream.
                         self.db.sync.trigger_crud_uploads().await;
                     }
-                    Instruction::FetchCredentials { did_expire: _ } => {
+                    Instruction::FetchCredentials { .. } => {
                         // TODO: Pre-fetching credentials
                         // If did_expire is true, the core extension will also emit a stop
                         // instruction. So we don't have to handle that separately.
@@ -156,7 +156,7 @@ pub enum DownloadEvent {
 }
 
 impl DownloadEvent {
-    fn as_powersync_control_argument(self) -> (&'static str, PowerSyncControlArgument) {
+    fn into_powersync_control_argument(self) -> (&'static str, PowerSyncControlArgument) {
         use PowerSyncControlArgument::*;
 
         match self {
@@ -185,7 +185,7 @@ impl DownloadEvent {
 
         let instructions = {
             let mut stmt = tx.prepare_cached("SELECT powersync_control(?, ?)")?;
-            let (op, arg) = self.as_powersync_control_argument();
+            let (op, arg) = self.into_powersync_control_argument();
 
             let mut rows = stmt.query(params![op, arg])?;
             let Some(row) = rows.next()? else {
@@ -196,7 +196,7 @@ impl DownloadEvent {
                 PowerSyncError::argument_error("Could not read powersync_control instructions")
             })?;
 
-            serde_json::from_str(&instructions)?
+            serde_json::from_str(instructions)?
         };
 
         tx.commit()?;
@@ -217,7 +217,7 @@ impl ToSql for PowerSyncControlArgument {
             PowerSyncControlArgument::Null => ValueRef::Null,
             PowerSyncControlArgument::StaticString(str) => ValueRef::Text(str.as_bytes()),
             PowerSyncControlArgument::String(str) => ValueRef::Text(str.as_bytes()),
-            PowerSyncControlArgument::Bytes(items) => ValueRef::Blob(&items),
+            PowerSyncControlArgument::Bytes(items) => ValueRef::Blob(items),
         }))
     }
 }

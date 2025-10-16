@@ -162,7 +162,7 @@ impl<'a> CrudTransactionStream<'a> {
 
         Ok(if let Some((id, tx_id)) = last {
             let tx = CrudTransaction {
-                db: db,
+                db,
                 id: Some(tx_id),
                 last_item_id: id,
                 crud: crud_entries,
@@ -194,18 +194,18 @@ impl<'a> Stream for CrudTransactionStream<'a> {
 
         let next_tx = this
             .next_tx
-            .get_or_insert_with(|| Self::next_transaction(&this.db, *this.last_item_id).boxed());
+            .get_or_insert_with(|| Self::next_transaction(this.db, *this.last_item_id).boxed());
 
         let result = ready!(next_tx.poll(cx));
         *this.next_tx = None;
 
-        return Poll::Ready(match result {
+        Poll::Ready(match result {
             Ok(None) => None,
             Ok(Some((last_item_id, tx))) => {
                 *this.last_item_id = Some(last_item_id);
                 Some(Ok(tx))
             }
             Err(e) => Some(Err(e)),
-        });
+        })
     }
 }
