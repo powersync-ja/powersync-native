@@ -225,7 +225,7 @@ impl ToSql for PowerSyncControlArgument {
 #[derive(Debug, Serialize)]
 pub struct StartDownloadIteration {
     pub parameters: serde_json::Value,
-    pub schema: Arc<Schema<'static>>,
+    pub schema: Arc<Schema>,
     pub include_defaults: bool,
     pub active_streams: Vec<StreamKey>,
 }

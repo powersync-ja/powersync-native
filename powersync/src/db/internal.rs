@@ -22,14 +22,14 @@ use crate::{
 pub struct InnerPowerSyncState {
     pub env: PowerSyncEnvironment,
     did_initialize: SharedFuture<Result<(), PowerSyncError>>,
-    pub schema: Arc<Schema<'static>>,
+    pub schema: Arc<Schema>,
     pub status: SyncStatus,
     pub sync: SyncCoordinator,
     pub current_streams: SyncStreamTracker,
 }
 
 impl InnerPowerSyncState {
-    pub fn new(env: PowerSyncEnvironment, schema: Schema<'static>) -> Self {
+    pub fn new(env: PowerSyncEnvironment, schema: Schema) -> Self {
         Self {
             env,
             did_initialize: SharedFuture::new(),

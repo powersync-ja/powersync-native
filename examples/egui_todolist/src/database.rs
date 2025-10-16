@@ -27,7 +27,7 @@ pub struct TodoEntry {
 }
 
 impl TodoEntry {
-    fn schema() -> Table<'static> {
+    fn schema() -> Table {
         Table::create(
             "todos",
             vec![
@@ -63,7 +63,7 @@ pub struct TodoList {
 }
 
 impl TodoList {
-    fn schema() -> Table<'static> {
+    fn schema() -> Table {
         Table::create("lists", vec![Column::text("name")], |_| {})
     }
 
@@ -96,7 +96,7 @@ impl TodoDatabase {
         let env = PowerSyncEnvironment::custom(
             client.clone(),
             ConnectionPool::single_connection(conn),
-            Box::new(PowerSyncEnvironment::default_timer()),
+            Box::new(PowerSyncEnvironment::tokio_timer()),
         );
         let mut schema = Schema::default();
         schema.tables.push(TodoList::schema());

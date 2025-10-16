@@ -1,13 +1,16 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 use serde::{Serialize, ser::SerializeStruct};
 
 use crate::error::PowerSyncError;
 
+type SchemaString = Cow<'static, str>;
+
 #[derive(Serialize, Default, Debug)]
-pub struct Schema<'a> {
-    pub tables: Vec<Table<'a>>,
-    pub raw_tables: Vec<RawTable<'a>>,
+pub struct Schema {
+    pub tables: Vec<Table>,
+    pub raw_tables: Vec<RawTable>,
 }
 
 /// A PowerSync-managed table.
@@ -15,16 +18,16 @@ pub struct Schema<'a> {
 /// When this is part of a schema, the PowerSync SDK will create and auto-migrate the table.
 /// If you need direct control on a table, use [RawTable] instead.
 #[derive(Debug)]
-pub struct Table<'a> {
+pub struct Table {
     /// The synced table name, matching sync rules.
-    pub name: &'a str,
+    pub name: SchemaString,
     // Override the name for the view.
-    pub view_name_override: Option<&'a str>,
+    pub view_name_override: Option<SchemaString>,
     /// List of columns.
-    pub columns: Vec<Column<'a>>,
+    pub columns: Vec<Column>,
     /// List of indexes.
-    pub indexes: Vec<Index<'a>>,
-    /// WHether this is a local-only table.
+    pub indexes: Vec<Index>,
+    /// Whether this is a local-only table.
     pub local_only: bool,
     /// Whether this is an insert-only table.
     pub insert_only: bool,
@@ -34,23 +37,23 @@ pub struct Table<'a> {
     /// When set, track old values of columns for CRUD entries.
     ///
     /// See [TrackPreviousValues] for details.
-    pub track_previous_values: Option<TrackPreviousValues<'a>>,
+    pub track_previous_values: Option<TrackPreviousValues>,
     /// Whether an `UPDATE` statement that doesn't change any values should be ignored when creating
     /// CRUD entries.
     pub ignore_empty_updates: bool,
 }
 
-impl<'a> Table<'a> {
+impl Table {
     /// Creates a new table from its `name` and `columns`.
     ///
     /// Additional options can be set with the `build` callback.
     pub fn create(
-        name: &'a str,
-        columns: Vec<Column<'a>>,
-        build: impl FnOnce(&mut Table<'a>) -> (),
+        name: impl Into<SchemaString>,
+        columns: Vec<Column>,
+        build: impl FnOnce(&mut Table) -> (),
     ) -> Self {
         let mut table = Self {
-            name,
+            name: name.into(),
             view_name_override: None,
             columns,
             indexes: vec![],
@@ -95,7 +98,7 @@ impl<'a> Table<'a> {
                 ));
             }
 
-            if !column_names.insert(column.name) {
+            if !column_names.insert(column.name.as_ref()) {
                 return Err(PowerSyncError::argument_error(format!(
                     "Duplicate column: {}",
                     column.name
@@ -107,7 +110,7 @@ impl<'a> Table<'a> {
 
         let mut index_names = HashSet::new();
         for index in &self.indexes {
-            if !index_names.insert(index.name) {
+            if !index_names.insert(index.name.as_ref()) {
                 return Err(PowerSyncError::argument_error(format!(
                     "Duplicate index: {}",
                     index.name
@@ -117,7 +120,7 @@ impl<'a> Table<'a> {
             // TODO: Check invalid chars
 
             for column in &index.columns {
-                if !column_names.contains(&column.name) {
+                if !column_names.contains(column.name.as_ref()) {
                     return Err(PowerSyncError::argument_error(format!(
                         "Column: {} not found for index {}",
                         column.name, index.name,
@@ -132,7 +135,7 @@ impl<'a> Table<'a> {
     const MAX_AMOUNT_OF_COLUMNS: usize = 1999;
 }
 
-impl<'a> Serialize for Table<'a> {
+impl Serialize for Table {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -168,30 +171,30 @@ impl<'a> Serialize for Table<'a> {
 }
 
 #[derive(Serialize, Debug)]
-pub struct Column<'a> {
-    pub name: &'a str,
+pub struct Column {
+    pub name: SchemaString,
     #[serde(rename = "type")]
     pub column_type: ColumnType,
 }
 
-impl<'a> Column<'a> {
-    pub fn text(name: &'a str) -> Self {
+impl Column {
+    pub fn text(name: impl Into<SchemaString>) -> Self {
         Self {
-            name,
+            name: name.into(),
             column_type: ColumnType::Text,
         }
     }
 
-    pub fn integer(name: &'a str) -> Self {
+    pub fn integer(name: impl Into<SchemaString>) -> Self {
         Self {
-            name,
+            name: name.into(),
             column_type: ColumnType::Integer,
         }
     }
 
-    pub fn real(name: &'a str) -> Self {
+    pub fn real(name: impl Into<SchemaString>) -> Self {
         Self {
-            name,
+            name: name.into(),
             column_type: ColumnType::Real,
         }
     }
@@ -208,38 +211,37 @@ pub enum ColumnType {
 }
 
 #[derive(Serialize, Debug)]
-pub struct Index<'a> {
-    pub name: &'a str,
-    pub columns: Vec<IndexedColumn<'a>>,
+pub struct Index {
+    pub name: SchemaString,
+    pub columns: Vec<IndexedColumn>,
 }
 
 #[derive(Serialize, Debug)]
-pub struct IndexedColumn<'a> {
-    pub name: &'a str,
+pub struct IndexedColumn {
+    pub name: SchemaString,
     pub ascending: bool,
     #[serde(rename = "type")]
-    pub type_name: &'a str,
+    pub type_name: SchemaString,
 }
 
 #[derive(Serialize, Debug)]
-pub struct RawTable<'a> {
-    pub name: &'a str,
-    pub put: PendingStatement<'a>,
-    pub delete: PendingStatement<'a>,
+pub struct RawTable {
+    pub name: SchemaString,
+    pub put: PendingStatement,
+    pub delete: PendingStatement,
 }
 
 #[derive(Serialize, Debug)]
-pub struct PendingStatement<'a> {
-    pub sql: String,
+pub struct PendingStatement {
+    pub sql: SchemaString,
     /// This vec should contain an entry for each parameter in [sql].
-    #[serde(borrow)]
-    pub params: Vec<PendingStatementValue<'a>>,
+    pub params: Vec<PendingStatementValue>,
 }
 
 #[derive(Serialize, Debug)]
-pub enum PendingStatementValue<'a> {
+pub enum PendingStatementValue {
     Id,
-    Column(&'a str),
+    Column(SchemaString),
     // TODO: Stuff like a raw object of put data?
 }
 
@@ -247,12 +249,12 @@ pub enum PendingStatementValue<'a> {
 ///
 /// These operations are enabled py passing them to a non-local [Table] constructor.
 #[derive(Serialize, Debug)]
-pub struct TrackPreviousValues<'a> {
-    pub column_filter: Option<Vec<&'a str>>,
+pub struct TrackPreviousValues {
+    pub column_filter: Option<Vec<SchemaString>>,
     pub only_when_changed: bool,
 }
 
-impl<'a> TrackPreviousValues<'a> {
+impl TrackPreviousValues {
     pub fn all() -> Self {
         Self {
             column_filter: None,

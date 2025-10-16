@@ -15,6 +15,7 @@ struct SyncStreamTest {
     test: DatabaseTest,
     db: PowerSyncDatabase,
     download_actor_task: Task<()>,
+    upload_actor_task: Task<()>,
 }
 
 impl SyncStreamTest {
@@ -28,10 +29,16 @@ impl SyncStreamTest {
             async move { actor.await }
         });
 
+        let upload_task = test.ex.spawn({
+            let actor = db.upload_actor();
+            async move { actor.await }
+        });
+
         Self {
             db,
             test,
             download_actor_task: sync_task,
+            upload_actor_task: upload_task,
         }
     }
 

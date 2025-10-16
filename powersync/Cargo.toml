@@ -9,6 +9,7 @@ crate-type = ["lib"]
 [features]
 tokio = ["dep:tokio"]
 smol = ["dep:async-io"]
+ffi = []
 
 [dependencies]
 async-broadcast = "0.7.2"

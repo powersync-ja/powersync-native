@@ -43,12 +43,14 @@ impl PowerSyncEnvironment {
     }
 
     #[cfg(feature = "smol")]
-    pub fn default_timer() -> impl Timer {
+    pub fn async_io_timer() -> impl Timer {
         use async_io::Timer as PlatformTimer;
 
         struct AsyncIoTimer;
         impl Timer for AsyncIoTimer {
             fn delay_once(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                use futures_lite::FutureExt;
+
                 async move {
                     PlatformTimer::after(duration).await;
                 }
@@ -59,7 +61,7 @@ impl PowerSyncEnvironment {
     }
 
     #[cfg(feature = "tokio")]
-    pub fn default_timer() -> impl Timer {
+    pub fn tokio_timer() -> impl Timer {
         use tokio::time::sleep;
 
         struct TokioTimer;

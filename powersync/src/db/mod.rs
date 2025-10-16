@@ -28,7 +28,7 @@ pub struct PowerSyncDatabase {
 }
 
 impl PowerSyncDatabase {
-    pub fn new(env: PowerSyncEnvironment, schema: Schema<'static>) -> Self {
+    pub fn new(env: PowerSyncEnvironment, schema: Schema) -> Self {
         Self {
             inner: Arc::new(InnerPowerSyncState::new(env, schema)),
         }
@@ -121,5 +121,23 @@ impl PowerSyncDatabase {
 
     pub async fn writer(&self) -> Result<impl LeasedConnection, PowerSyncError> {
         self.inner.writer().await
+    }
+
+    #[cfg(feature = "ffi")]
+    pub fn into_raw(self) -> *const InnerPowerSyncState {
+        Arc::into_raw(self.inner)
+    }
+
+    #[cfg(feature = "ffi")]
+    pub unsafe fn interpret_raw(inner: *const InnerPowerSyncState) -> Self {
+        unsafe { Arc::increment_strong_count(inner) };
+        Self {
+            inner: unsafe { Arc::from_raw(inner) },
+        }
+    }
+
+    #[cfg(feature = "ffi")]
+    pub unsafe fn drop_raw(inner: *const InnerPowerSyncState) {
+        drop(unsafe { Arc::from_raw(inner) });
     }
 }

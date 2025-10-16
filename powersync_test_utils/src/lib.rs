@@ -80,7 +80,7 @@ impl DatabaseTest {
         )
     }
 
-    pub fn default_schema() -> Schema<'static> {
+    pub fn default_schema() -> Schema {
         let mut schema = Schema::default();
         schema.tables.push(UserRow::table());
 
@@ -132,7 +132,7 @@ pub struct UserRow {
 }
 
 impl UserRow {
-    pub fn table() -> Table<'static> {
+    pub fn table() -> Table {
         Table::create(
             "users",
             vec![

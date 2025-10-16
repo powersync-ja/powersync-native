@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 
 use crate::error::PowerSyncError;
 
-#[link(name = "powersync_core")]
+#[link(name = "powersync_core", kind = "static")]
 unsafe extern "C" {
     pub unsafe fn powersync_init_static() -> c_int;
 }
