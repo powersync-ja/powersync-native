@@ -6,6 +6,7 @@ namespace powersync::internal {
 }
 
 #include "bindings.h"
+#include "helpers.h"
 
 namespace powersync {
     static void handle_result(internal::PowerSyncResultCode rc) {
@@ -23,17 +24,88 @@ namespace powersync {
         return "Unknown error";
     }
 
+    void RustTableHelper::map_column(std::vector<internal::Column>& target, const Column &column) {
+        internal::ColumnType type = {};
+        switch (column.type) {
+            case TEXT:
+                type = internal::ColumnType::Text;
+                break;
+            case INTEGER:
+                type = internal::ColumnType::Integer;
+                break;
+            case REAL:
+                type = internal::ColumnType::Real;
+                break;
+        }
+
+        target.emplace_back() = {
+            .name = column.name.c_str(),
+            .column_type = type,
+        };
+    }
+
+    void RustTableHelper::map_table(const Table &table) {
+        std::vector<internal::Column> columns = {};
+        for (const auto& column : table.columns) {
+            map_column(columns, column);
+        }
+
+        auto& managedColumns= this->columns.emplace_back(std::move(columns));
+        const char* view_name_override = nullptr;
+        if (table.view_name_override.has_value()) {
+            view_name_override = table.view_name_override.value().c_str();
+        }
+
+        this->tables.emplace_back() = {
+            .name = table.name.c_str(),
+            .view_name_override = view_name_override,
+            .columns = &managedColumns.front(),
+            .column_len = managedColumns.size(),
+            .local_only = table.local_only,
+            .insert_only = table.insert_only,
+            .track_metadata = table.track_metadata,
+            .ignore_empty_updates = table.ignore_empty_updates,
+        };
+    }
+
+    internal::RawSchema RustTableHelper::to_rust() {
+        return {
+            .tables = &this->tables.front(),
+            .tables_len = this->tables.size(),
+        };
+    }
+
+    static RustTableHelper schema_helper(const Schema& schema) {
+        RustTableHelper result;
+        for (const auto& table : schema.tables) {
+            result.map_table(table);
+        }
+
+        return result;
+    }
+
     Exception::~Exception() noexcept {
         if (this->msg) {
             internal::powersync_free_str(this->msg);
         }
     }
 
-    Database Database::in_memory(Schema schema) {
+    Database Database::in_memory(const Schema& schema) {
+        auto helper = schema_helper(schema);
+
         internal::RawPowerSyncDatabase db{};
-        handle_result(internal::powersync_db_in_memory(&db));
+        handle_result(internal::powersync_db_in_memory(helper.to_rust(), &db));
 
         return Database(db.db);
+    }
+
+    void Database::spawn_sync_thread() {
+        auto raw = this->rust_db;
+        std::thread thread([raw]() {
+            internal::powersync_run_tasks(static_cast<internal::InnerPowerSyncState*>(raw));
+        });
+
+        this->worker = std::move(thread);
     }
 
     LeasedConnection Database::reader() const {

@@ -1,12 +1,14 @@
 use async_executor::Executor;
 use futures_lite::future;
 use futures_lite::future::block_on;
-use powersync::PowerSyncDatabase;
+use powersync::{InnerPowerSyncState, PowerSyncDatabase};
 
 /// Runs asynchronous PowerSync tasks on the current thread.
 ///
 /// This blocks the thread until the database is closed.
-pub fn run_powersync_tasks(db: &PowerSyncDatabase) {
+#[unsafe(no_mangle)]
+pub extern "C" fn powersync_run_tasks(db: *const InnerPowerSyncState) {
+    let db = unsafe { PowerSyncDatabase::interpret_raw(db) };
     let executor = Executor::new();
     let downloader = executor.spawn(db.download_actor());
     let uploader = executor.spawn(db.upload_actor());

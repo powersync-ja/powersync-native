@@ -4,6 +4,7 @@
 #include <string>
 #include <optional>
 #include <utility>
+#include <thread>
 #include <vector>
 
 namespace powersync {
@@ -32,18 +33,18 @@ namespace powersync {
     std::string name;
     std::vector<Column> columns;
     //std::vector<Index> indices = {};
-    bool local_only = true;
+    bool local_only = false;
     bool insert_only = false;
     std::optional<std::string> view_name_override = std::nullopt;
     bool track_metadata = false;
     bool ignore_empty_updates = false;
     //std::optional<TrackPreviousValues> track_previous_values = std::nullopt;
 
-    Table(std::string name, std::vector<Column> columns);
+    Table(std::string name, std::vector<Column> columns): name(std::move(name)), columns(std::move(columns)) {}
   };
 
 struct Schema {
-
+  std::vector<Table> tables;
 };
 
 struct LeasedConnection {
@@ -63,15 +64,17 @@ public:
 class Database {
 private:
   void* rust_db;
+  std::optional<std::thread> worker;
 
   explicit Database(void* rust_db) : rust_db(rust_db) {}
 public:
   void disconnect();
+  void spawn_sync_thread();
 
   [[nodiscard]] LeasedConnection reader() const;
   [[nodiscard]] LeasedConnection writer() const;
 
-  static Database in_memory(Schema schema);
+  static Database in_memory(const Schema& schema);
 };
 
 class Exception final : public std::exception {
