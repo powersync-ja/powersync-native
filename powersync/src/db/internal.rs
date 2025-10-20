@@ -1,12 +1,13 @@
+use event_listener::EventListener;
+use futures_lite::{FutureExt, Stream, StreamExt, ready};
+use rusqlite::{Connection, params};
+use std::sync::{Mutex, Weak};
+use std::time::Duration;
 use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
-
-use event_listener::EventListener;
-use futures_lite::{FutureExt, Stream, StreamExt, ready};
-use rusqlite::{Connection, params};
 
 use crate::{
     db::{
@@ -30,21 +31,25 @@ pub struct InnerPowerSyncState {
     pub schema: Arc<Schema>,
     /// A container for the current sync status.
     pub status: SyncStatus,
-    /// Manages async channels the different sync actors use for communication.
-    pub sync: SyncCoordinator,
     /// A collection of currently-referenced sync stream subscriptions.
     pub(crate) current_streams: SyncStreamTracker,
+    /// Clients have a strong reference to the sync coordinator, but since sync actors have a
+    /// reference to [InnerPowerSyncState], we only keep a weak reference here to ensure we can drop
+    /// actors through the channels owned by [SyncCoordinator].
+    pub(crate) sync: Weak<SyncCoordinator>,
+    pub(crate) retry_delay: Mutex<Option<Duration>>,
 }
 
 impl InnerPowerSyncState {
-    pub fn new(env: PowerSyncEnvironment, schema: Schema) -> Self {
+    pub fn new(env: PowerSyncEnvironment, schema: Schema, sync: &Arc<SyncCoordinator>) -> Self {
         Self {
             env,
             did_initialize: SharedFuture::new(),
             schema: Arc::new(schema),
             status: SyncStatus::new(),
-            sync: Default::default(),
             current_streams: SyncStreamTracker::default(),
+            retry_delay: Default::default(),
+            sync: Arc::downgrade(sync),
         }
     }
 
@@ -118,7 +123,12 @@ impl InnerPowerSyncState {
     }
 
     pub async fn sync_iteration_delay(&self) {
-        if let Some(delay) = self.sync.retry_delay {
+        let delay = {
+            let guard = self.retry_delay.lock().unwrap();
+            guard.clone()
+        };
+
+        if let Some(delay) = delay {
             self.env.timer.delay_once(delay).await
         }
     }

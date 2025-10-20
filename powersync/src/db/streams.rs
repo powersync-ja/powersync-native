@@ -119,7 +119,7 @@ impl<'a> SyncStream<'a> {
             priority: options.priority,
         }))
         .await?;
-        self.db.inner.sync.resolve_offline_sync_status().await;
+        self.db.sync.resolve_offline_sync_status().await;
 
         let (stream, changed) = self
             .db
@@ -128,11 +128,7 @@ impl<'a> SyncStream<'a> {
             .reference_stream(&self.db.inner, &desc.into());
 
         if let Some(changed) = changed {
-            self.db
-                .inner
-                .sync
-                .handle_subscriptions_changed(changed)
-                .await;
+            self.db.sync.handle_subscriptions_changed(changed).await;
         }
 
         Ok(StreamSubscription { group: stream })

@@ -78,7 +78,9 @@ impl DownloadClient {
                         .await?;
 
                         // Trigger a crud upload after establishing a sync stream.
-                        self.db.sync.trigger_crud_uploads().await;
+                        if let Some(sync) = self.db.sync.upgrade() {
+                            sync.trigger_crud_uploads().await;
+                        }
                     }
                     Instruction::FetchCredentials { .. } => {
                         // TODO: Pre-fetching credentials

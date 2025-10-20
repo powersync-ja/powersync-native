@@ -1,10 +1,11 @@
-use std::{sync::RwLock, time::Duration};
+use std::sync::RwLock;
 
 use async_channel::{Receiver, Sender};
 use async_oneshot::oneshot;
 
 use crate::{
     SyncOptions,
+    db::internal::InnerPowerSyncState,
     sync::{
         download::DownloadActorCommand, streams::ChangedSyncSubscriptions,
         upload::UploadActorCommand,
@@ -31,15 +32,22 @@ impl<T> AsyncRequest<T> {
 
 /// Implements `connect()` and `disconnect()` by dispatching messages to the upload and download
 /// actors.
+///
+/// Since actors only have access to the receiving end of their channels, dropping the coordinator
+/// will also terminate all actors (albeit asynchronously).
 #[derive(Default)]
 pub struct SyncCoordinator {
     control_downloads: RwLock<Option<Sender<AsyncRequest<DownloadActorCommand>>>>,
     control_uploads: RwLock<Option<Sender<AsyncRequest<UploadActorCommand>>>>,
-    pub(crate) retry_delay: Option<Duration>,
 }
 
 impl SyncCoordinator {
-    pub async fn connect(&self, options: SyncOptions) {
+    pub async fn connect(&self, options: SyncOptions, db: &InnerPowerSyncState) {
+        {
+            let mut lock = db.retry_delay.lock().unwrap();
+            *lock = Some(options.retry_delay);
+        }
+
         let connector = options.connector.clone();
         self.download_actor_request(DownloadActorCommand::Connect(options))
             .await;

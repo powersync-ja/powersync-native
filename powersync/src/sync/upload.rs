@@ -7,6 +7,7 @@ use futures_lite::{
 use log::{debug, info, warn};
 use rusqlite::{Connection, params};
 
+use crate::sync::coordinator::SyncCoordinator;
 use crate::{
     BackendConnector,
     db::internal::InnerPowerSyncState,
@@ -30,8 +31,8 @@ pub struct UploadActor {
 }
 
 impl UploadActor {
-    pub fn new(db: Arc<InnerPowerSyncState>) -> Self {
-        let commands = db.sync.receive_upload_commands();
+    pub fn new(db: Arc<InnerPowerSyncState>, sync: &SyncCoordinator) -> Self {
+        let commands = sync.receive_upload_commands();
 
         Self {
             state: UploadActorState::Idle,
@@ -159,7 +160,9 @@ impl UploadActor {
                             // It's possible that pending CRUD uploads were preventing data from
                             // syncing. So now that that's completed, notify the download client in
                             // case it needs to retry.
-                            self.db.sync.mark_crud_uploads_completed().await;
+                            if let Some(sync) = self.db.sync.upgrade() {
+                                sync.mark_crud_uploads_completed().await;
+                            }
 
                             // Apart from that, the upload is done and we transition back into the
                             // ready connected state to start the next iteration when needed.

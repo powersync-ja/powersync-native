@@ -62,10 +62,22 @@ impl SyncStreamTest {
                 return false;
             };
 
-            return progress.total == total && progress.downloaded == completed;
+            progress.total == total && progress.downloaded == completed
         })
         .await
     }
+}
+
+#[test]
+fn dropping_database_completes_actors() {
+    let sync = SyncStreamTest::new();
+    drop(sync.db);
+
+    future::block_on(sync.test.ex.run(async move {
+        for task in sync.tasks {
+            task.await;
+        }
+    }));
 }
 
 #[test]
@@ -124,14 +136,8 @@ fn subscribes_with_streams() {
         );
 
         let status = sync.db.status();
-        assert_eq!(
-            status.for_stream(&a).unwrap().subscription.is_active(),
-            false
-        );
-        assert_eq!(
-            status.for_stream(&b).unwrap().subscription.is_active(),
-            false
-        );
+        assert!(!status.for_stream(&a).unwrap().subscription.is_active(),);
+        assert!(!status.for_stream(&b).unwrap().subscription.is_active(),);
         let mut next_status = sync.db.watch_status().skip(1);
         let status = next_status.next();
         request

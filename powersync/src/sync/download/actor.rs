@@ -7,6 +7,7 @@ use futures_lite::{
 use log::warn;
 use serde_json::Map;
 
+use crate::sync::coordinator::SyncCoordinator;
 use crate::{
     SyncOptions,
     db::internal::InnerPowerSyncState,
@@ -36,8 +37,8 @@ pub struct DownloadActor {
 }
 
 impl DownloadActor {
-    pub fn new(db: Arc<InnerPowerSyncState>) -> Self {
-        let commands = db.sync.receive_download_commands();
+    pub fn new(db: Arc<InnerPowerSyncState>, sync: &SyncCoordinator) -> Self {
+        let commands = sync.receive_download_commands();
 
         Self {
             state: DownloadActorState::Idle,

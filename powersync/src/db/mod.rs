@@ -3,6 +3,7 @@ use std::sync::Arc;
 use futures_lite::{FutureExt, Stream, StreamExt};
 
 use crate::db::async_support::AsyncDatabaseTasks;
+use crate::sync::coordinator::SyncCoordinator;
 use crate::{
     CrudTransaction, SyncOptions,
     db::{
@@ -26,6 +27,7 @@ pub mod watch;
 
 #[derive(Clone)]
 pub struct PowerSyncDatabase {
+    sync: Arc<SyncCoordinator>,
     inner: Arc<InnerPowerSyncState>,
 }
 
@@ -39,8 +41,11 @@ pub struct PowerSyncDatabase {
 /// Then, call [Self::connect] to establish a connection to the PowerSync service.
 impl PowerSyncDatabase {
     pub fn new(env: PowerSyncEnvironment, schema: Schema) -> Self {
+        let coordinator = Arc::new(SyncCoordinator::default());
+
         Self {
-            inner: Arc::new(InnerPowerSyncState::new(env, schema)),
+            inner: Arc::new(InnerPowerSyncState::new(env, schema, &coordinator)),
+            sync: coordinator,
         }
     }
 
@@ -53,8 +58,8 @@ impl PowerSyncDatabase {
     /// executor-agnostic and is easier to access from C.
     #[must_use = "Returned tasks still need to be spawned on an async runtime"]
     pub fn async_tasks(&self) -> AsyncDatabaseTasks {
-        let mut downloads = DownloadActor::new(self.inner.clone());
-        let mut uploads = UploadActor::new(self.inner.clone());
+        let mut downloads = DownloadActor::new(self.inner.clone(), &self.sync);
+        let mut uploads = UploadActor::new(self.inner.clone(), &self.sync);
 
         AsyncDatabaseTasks::new(
             async move { downloads.run().await }.boxed(),
@@ -65,12 +70,12 @@ impl PowerSyncDatabase {
     /// Requests the download actor, started with [Self::download_actor], to start establishing a
     /// connection to the PowerSync service.
     pub async fn connect(&self, options: SyncOptions) {
-        self.inner.sync.connect(options).await
+        self.sync.connect(options, &self.inner).await
     }
 
     /// If the sync client is currently connected, requests it to disconnect.
     pub async fn disconnect(&self) {
-        self.inner.sync.disconnect().await
+        self.sync.disconnect().await
     }
 
     /// Returns an asynchronous [Stream] emitting an empty event every time one of the specified
@@ -158,6 +163,7 @@ impl PowerSyncDatabase {
         self.inner.writer().await
     }
 
+    /*
     /// Returns the shared [InnerPowerSyncState] backing this database.
     ///
     /// This is meant to be used internally to build the PowerSync C++ SDK.
@@ -190,4 +196,5 @@ impl PowerSyncDatabase {
     pub unsafe fn drop_raw(inner: *const InnerPowerSyncState) {
         drop(unsafe { Arc::from_raw(inner) });
     }
+     */
 }
