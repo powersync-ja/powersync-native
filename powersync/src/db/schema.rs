@@ -13,6 +13,41 @@ pub struct Schema {
     pub raw_tables: Vec<RawTable>,
 }
 
+impl Schema {
+    /// Validates the schema by ensuring there are no duplicate table names and that each table is
+    /// valid.
+    pub fn validate(&self) -> Result<(), PowerSyncError> {
+        let mut table_names = HashSet::new();
+        for table in &self.tables {
+            if !table_names.insert(table.name.as_ref()) {
+                return Err(PowerSyncError::argument_error(format!(
+                    "Duplicate table name: {}",
+                    table.name,
+                )));
+            }
+
+            table.validate()?;
+        }
+
+        Ok(())
+    }
+
+    fn is_invalid_name_char(c: char) -> bool {
+        // Specialized implementation of the regex ["'%,.#\s\[\]]
+        matches!(c, '"' | '\'' | '%' | ',' | '.' | '#' | '[' | ']') || c.is_whitespace()
+    }
+
+    fn validate_name(name: &str, kind: &'static str) -> Result<(), PowerSyncError> {
+        if name.contains(Self::is_invalid_name_char) {
+            Err(PowerSyncError::argument_error(format!(
+                "Name for {kind} ({name}) contains invalid characters."
+            )))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// A PowerSync-managed table.
 ///
 /// When this is part of a schema, the PowerSync SDK will create and auto-migrate the table.
@@ -67,7 +102,7 @@ impl Table {
         table
     }
 
-    pub fn validate(&self) -> Result<(), PowerSyncError> {
+    fn validate(&self) -> Result<(), PowerSyncError> {
         if self.columns.len() > Self::MAX_AMOUNT_OF_COLUMNS {
             return Err(PowerSyncError::argument_error(format!(
                 "Has more than {} columns, which is not supported",
@@ -75,7 +110,10 @@ impl Table {
             )));
         }
 
-        // TODO: check invalid chars in table and view override name
+        Schema::validate_name(&self.name, "table")?;
+        if let Some(view_name_override) = &self.view_name_override {
+            Schema::validate_name(view_name_override, "table view")?;
+        }
 
         if self.local_only && self.track_metadata {
             return Err(PowerSyncError::argument_error(
@@ -105,7 +143,7 @@ impl Table {
                 )));
             }
 
-            // TODO: Check invalid chars
+            Schema::validate_name(&column.name, "column")?;
         }
 
         let mut index_names = HashSet::new();
@@ -116,8 +154,7 @@ impl Table {
                     index.name
                 )));
             }
-
-            // TODO: Check invalid chars
+            Schema::validate_name(&index.name, "index")?;
 
             for column in &index.columns {
                 if !column_names.contains(column.name.as_ref()) {
@@ -242,7 +279,6 @@ pub struct PendingStatement {
 pub enum PendingStatementValue {
     Id,
     Column(SchemaString),
-    // TODO: Stuff like a raw object of put data?
 }
 
 /// Options to include old values in CRUD entries for update statements.
@@ -265,7 +301,7 @@ impl TrackPreviousValues {
 
 #[cfg(test)]
 mod test {
-    use crate::schema::{Table, TrackPreviousValues};
+    use crate::schema::{Column, Table, TrackPreviousValues};
 
     #[test]
     fn handles_options_track_metadata() {
@@ -337,5 +373,23 @@ mod test {
                 .as_bool()
                 .unwrap(),
         );
+    }
+
+    #[test]
+    fn invalid_table_name() {
+        let mut table = Table::create("#invalid-table", vec![], |tbl| {});
+        assert!(table.validate().is_err());
+
+        table.name = "valid".into();
+        assert!(table.validate().is_ok());
+    }
+
+    #[test]
+    fn invalid_duplicate_columns() {
+        let mut table = Table::create("tbl", vec![], |tbl| tbl.columns.push(Column::text("a")));
+        assert!(table.validate().is_ok());
+
+        table.columns.push(Column::integer("a"));
+        assert!(table.validate().is_err());
     }
 }

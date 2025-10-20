@@ -33,7 +33,7 @@ pub struct InnerPowerSyncState {
     /// Manages async channels the different sync actors use for communication.
     pub sync: SyncCoordinator,
     /// A collection of currently-referenced sync stream subscriptions.
-    pub current_streams: SyncStreamTracker,
+    pub(crate) current_streams: SyncStreamTracker,
 }
 
 impl InnerPowerSyncState {
@@ -68,6 +68,8 @@ impl InnerPowerSyncState {
     }
 
     fn update_schema_internal(&self, conn: &Connection) -> Result<(), PowerSyncError> {
+        self.schema.validate()?;
+
         let serialized_schema = serde_json::to_string(&self.schema)?;
         conn.prepare("SELECT powersync_replace_schema(?)")?
             .query_one(params![serialized_schema], |_| Ok(()))?;
