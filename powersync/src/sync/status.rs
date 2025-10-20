@@ -18,6 +18,7 @@ use crate::{
     },
 };
 
+/// An internal struct holding the current sync status, which allows notifying listeners.
 pub struct SyncStatus {
     data: Mutex<Arc<SyncStatusData>>,
 }
@@ -68,7 +69,9 @@ pub struct SyncStatusData {
     download_error: Option<PowerSyncError>,
     uploads: UploadStatus,
 
+    /// Raised when a new instance is installed in [SyncStatus].
     is_invalidated: AtomicBool,
+    /// Notified when a new instance is installed in [SyncStatus].
     invalidated: Event,
 }
 

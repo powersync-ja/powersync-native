@@ -183,10 +183,9 @@ impl UploadActor {
                     }
                 };
 
-                match future::race(request, upload_done).await {
-                    None => old_state,
-                    Some(state) => state,
-                }
+                future::race(request, upload_done)
+                    .await
+                    .unwrap_or(old_state)
             }
             UploadActorState::WaitingForReconnect { ref mut timeout } => {
                 // Either the timeout expires, in which case we reconnect, or a disconnect is
@@ -199,10 +198,9 @@ impl UploadActor {
                     Some(UploadActorState::Connected(state))
                 };
 
-                match future::race(request, timeout_expired).await {
-                    None => old_state,
-                    Some(state) => state,
-                }
+                future::race(request, timeout_expired)
+                    .await
+                    .unwrap_or(old_state)
             }
             UploadActorState::Stopped => panic!("No further state transitions after stopped"),
         };

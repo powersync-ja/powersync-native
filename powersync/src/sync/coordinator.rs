@@ -29,6 +29,8 @@ impl<T> AsyncRequest<T> {
     }
 }
 
+/// Implements `connect()` and `disconnect()` by dispatching messages to the upload and download
+/// actors.
 #[derive(Default)]
 pub struct SyncCoordinator {
     control_downloads: RwLock<Option<Sender<AsyncRequest<DownloadActorCommand>>>>,
@@ -52,21 +54,32 @@ impl SyncCoordinator {
             .await;
     }
 
+    /// Requests a round of CRUD uploads.
     pub async fn trigger_crud_uploads(&self) {
         self.upload_actor_request(UploadActorCommand::TriggerCrudUpload)
             .await;
     }
 
+    /// Marks CRUD uploads as complete, allowing the download client to retry if a previous
+    /// checkpoint was blocked by pending uploads.
     pub async fn mark_crud_uploads_completed(&self) {
         self.download_actor_request(DownloadActorCommand::CrudUploadComplete)
             .await;
     }
 
+    /// Causes the download actor to call `powersync_offline_sync_status()` and emit those results.
+    ///
+    /// This is used after adding a new subscription to include it in the sync status even if we're
+    /// disconnected.
+    /// This is a no-op while connected.
     pub async fn resolve_offline_sync_status(&self) {
         self.download_actor_request(DownloadActorCommand::ResolveOfflineSyncStatusIfNotConnected)
             .await;
     }
 
+    /// Handle the set of active sync stream subscriptions changing.
+    ///
+    /// This is a no-op if not connected.
     pub async fn handle_subscriptions_changed(&self, update: ChangedSyncSubscriptions) {
         self.download_actor_request(DownloadActorCommand::SubscriptionsChanged(update))
             .await;

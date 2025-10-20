@@ -7,10 +7,14 @@ use crate::error::{PowerSyncError, RawPowerSyncError};
 /// connect to the PowerSync service.
 #[async_trait]
 pub trait BackendConnector: Send + Sync {
+    /// Fetches a fresh JWT from the backend to be used against the PowerSync service.
     async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError>;
+
+    /// Inspects completed CRUD transactions on a database and uploads them.
     async fn upload_data(&self) -> Result<(), PowerSyncError>;
 }
 
+/// Credentials used to connect to a PowerSync service instance.
 pub struct PowerSyncCredentials {
     /// PowerSync endpoint, e.g. `https://myinstance.powersync.co`.
     pub endpoint: String,
@@ -19,7 +23,8 @@ pub struct PowerSyncCredentials {
 }
 
 impl PowerSyncCredentials {
-    pub fn parsed_endpoint(&self) -> Result<Url, PowerSyncError> {
+    /// Parses the [Self::endpoint] into a URI.
+    pub(crate) fn parsed_endpoint(&self) -> Result<Url, PowerSyncError> {
         let url = Url::parse(&self.endpoint)
             .map_err(|e| RawPowerSyncError::InvalidPowerSyncEndpoint { inner: e })?;
         if url.cannot_be_a_base() {
