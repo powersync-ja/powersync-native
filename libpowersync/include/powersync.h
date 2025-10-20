@@ -8,6 +8,13 @@
 #include <vector>
 
 namespace powersync {
+  namespace internal {
+    struct RawPowerSyncDatabase {
+      void* sync;
+      void* inner;
+    };
+  }
+
   enum ColumnType {
     TEXT,
     INTEGER,
@@ -63,13 +70,18 @@ public:
 
 class Database {
 private:
-  void* rust_db;
+  internal::RawPowerSyncDatabase raw;
   std::optional<std::thread> worker;
 
-  explicit Database(void* rust_db) : rust_db(rust_db) {}
+  explicit Database(internal::RawPowerSyncDatabase raw) : raw(raw) {}
+
+  // Databases can't be copied, the internal::RawPowerSyncDatabase is an exclusive reference in Rust.
+  Database(const Database&) = delete;
 public:
   void disconnect();
   void spawn_sync_thread();
+
+  ~Database();
 
   [[nodiscard]] LeasedConnection reader() const;
   [[nodiscard]] LeasedConnection writer() const;

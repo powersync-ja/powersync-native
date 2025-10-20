@@ -40,10 +40,6 @@ struct RawSchema {
   uintptr_t tables_len;
 };
 
-struct RawPowerSyncDatabase {
-  InnerPowerSyncState *db;
-};
-
 struct ConnectionLeaseResult {
   sqlite3 *sqlite3;
   RawConnectionLease *lease;
@@ -53,10 +49,10 @@ extern "C" {
 
 PowerSyncResultCode powersync_db_in_memory(RawSchema schema, RawPowerSyncDatabase *out_db);
 
-PowerSyncResultCode powersync_db_reader(const InnerPowerSyncState *db,
+PowerSyncResultCode powersync_db_reader(const RawPowerSyncDatabase *db,
                                         ConnectionLeaseResult *out_lease);
 
-PowerSyncResultCode powersync_db_writer(const InnerPowerSyncState *db,
+PowerSyncResultCode powersync_db_writer(const RawPowerSyncDatabase *db,
                                         ConnectionLeaseResult *out_lease);
 
 void powersync_db_return_lease(RawConnectionLease *lease);
@@ -70,7 +66,7 @@ void powersync_free_str(char *str);
 /// Runs asynchronous PowerSync tasks on the current thread.
 ///
 /// This blocks the thread until the database is closed.
-void powersync_run_tasks(const InnerPowerSyncState *db);
+void powersync_run_tasks(const RawPowerSyncDatabase *db);
 
 }  // extern "C"
 

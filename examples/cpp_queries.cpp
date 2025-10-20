@@ -16,6 +16,7 @@ int main() {
         Column::text("name")
     }});
     auto db = Database::in_memory(schema);
+    db.spawn_sync_thread();
 
     {
         auto writer = db.writer();

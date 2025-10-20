@@ -27,8 +27,8 @@ pub mod watch;
 
 #[derive(Clone)]
 pub struct PowerSyncDatabase {
-    sync: Arc<SyncCoordinator>,
-    inner: Arc<InnerPowerSyncState>,
+    pub(crate) sync: Arc<SyncCoordinator>,
+    pub(crate) inner: Arc<InnerPowerSyncState>,
 }
 
 /// An opened database managed by the PowerSync SDK.
@@ -162,39 +162,4 @@ impl PowerSyncDatabase {
     pub async fn writer(&self) -> Result<impl LeasedConnection, PowerSyncError> {
         self.inner.writer().await
     }
-
-    /*
-    /// Returns the shared [InnerPowerSyncState] backing this database.
-    ///
-    /// This is meant to be used internally to build the PowerSync C++ SDK.
-    #[cfg(feature = "ffi")]
-    pub fn into_raw(self) -> *const InnerPowerSyncState {
-        Arc::into_raw(self.inner)
-    }
-
-    /// Creates a [Self] from the raw inner pointer.
-    ///
-    /// ## Safety
-    ///
-    /// The inner pointer must have been obtained from [Self::into_raw] without calling
-    /// [Self::drop_raw] on it in the meantime.
-    #[cfg(feature = "ffi")]
-    pub unsafe fn interpret_raw(inner: *const InnerPowerSyncState) -> Self {
-        unsafe { Arc::increment_strong_count(inner) };
-        Self {
-            inner: unsafe { Arc::from_raw(inner) },
-        }
-    }
-
-    /// Frees resources from a [Self::into_raw] pointer.
-    ///
-    /// ## Safety
-    ///
-    /// This method must be called at most once on a pointer previously returned by
-    /// [Self::into:raw].
-    #[cfg(feature = "ffi")]
-    pub unsafe fn drop_raw(inner: *const InnerPowerSyncState) {
-        drop(unsafe { Arc::from_raw(inner) });
-    }
-     */
 }

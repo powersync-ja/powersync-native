@@ -96,13 +96,14 @@ namespace powersync {
         internal::RawPowerSyncDatabase db{};
         handle_result(internal::powersync_db_in_memory(helper.to_rust(), &db));
 
-        return Database(db.db);
+        return Database(db);
     }
 
     void Database::spawn_sync_thread() {
-        auto raw = this->rust_db;
+        auto raw = &this->raw;
         std::thread thread([raw]() {
-            internal::powersync_run_tasks(static_cast<internal::InnerPowerSyncState*>(raw));
+            // TODO: There is a race condition here when the database's destructor runs before we reach this call.
+            internal::powersync_run_tasks(raw);
         });
 
         this->worker = std::move(thread);
@@ -111,17 +112,23 @@ namespace powersync {
     LeasedConnection Database::reader() const {
         internal::ConnectionLeaseResult result{};
 
-        auto raw = static_cast<internal::InnerPowerSyncState*>(this->rust_db);
-        handle_result(internal::powersync_db_reader(raw, &result));
+        handle_result(internal::powersync_db_reader(&this->raw, &result));
         return {result.sqlite3, result.lease};
     }
 
     LeasedConnection Database::writer() const {
         internal::ConnectionLeaseResult result{};
 
-        auto raw = static_cast<internal::InnerPowerSyncState*>(this->rust_db);
-        handle_result(internal::powersync_db_writer(raw, &result));
+        handle_result(internal::powersync_db_writer(&this->raw, &result));
         return {result.sqlite3, result.lease};
+    }
+
+    Database::~Database() {
+        // First, clear the database client.
+        internal::powersync_db_free(this->raw);
+
+        // Dropping the client will asynchronously complete sync actors, so join that.
+        this->worker->join();
     }
 
     LeasedConnection::~LeasedConnection() {
