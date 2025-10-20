@@ -14,8 +14,7 @@ use serde_json::json;
 struct SyncStreamTest {
     test: DatabaseTest,
     db: PowerSyncDatabase,
-    download_actor_task: Task<()>,
-    upload_actor_task: Task<()>,
+    tasks: Vec<Task<()>>,
 }
 
 impl SyncStreamTest {
@@ -23,23 +22,8 @@ impl SyncStreamTest {
         let test = DatabaseTest::new();
         let db = test.in_memory_database();
 
-        let sync_task = test.ex.spawn({
-            // Call download_actor() synchronously to register the channel.
-            let actor = db.download_actor();
-            async move { actor.await }
-        });
-
-        let upload_task = test.ex.spawn({
-            let actor = db.upload_actor();
-            async move { actor.await }
-        });
-
-        Self {
-            db,
-            test,
-            download_actor_task: sync_task,
-            upload_actor_task: upload_task,
-        }
+        let tasks = db.async_tasks().spawn_with(|f| test.ex.spawn(f));
+        Self { db, test, tasks }
     }
 
     fn connect(&self) {

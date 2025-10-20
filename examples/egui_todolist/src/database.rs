@@ -103,14 +103,7 @@ impl TodoDatabase {
         schema.tables.push(TodoEntry::schema());
 
         let db = PowerSyncDatabase::new(env, schema);
-        rt.spawn({
-            let db = db.clone();
-            async move { db.download_actor().await }
-        });
-        rt.spawn({
-            let db = db.clone();
-            async move { db.upload_actor().await }
-        });
+        db.async_tasks().spawn_with_tokio_runtime(rt);
 
         Self { db, client }
     }

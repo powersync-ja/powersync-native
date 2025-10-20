@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-use futures_lite::{Stream, StreamExt};
+use futures_lite::{FutureExt, Stream, StreamExt};
 
+use crate::db::async_support::AsyncDatabaseTasks;
 use crate::{
     CrudTransaction, SyncOptions,
     db::{
@@ -14,6 +15,7 @@ use crate::{
     sync::{download::DownloadActor, status::SyncStatusData, upload::UploadActor},
 };
 
+mod async_support;
 pub mod core_extension;
 pub mod crud;
 pub(crate) mod internal;
@@ -42,26 +44,22 @@ impl PowerSyncDatabase {
         }
     }
 
-    /// Starts an actor responsible for establishing a connection to the sync service when
-    /// [Self::connect] is called on the database.
+    /// Returns a collection of [AsyncDatabaseTasks] that need to be started before connecting this
+    /// PowerSync database to a PowerSync service.
     ///
-    /// By exposing this as an entrypoint instead of starting the task on a specific entrypoint,
-    /// the SDK stays executor-agnostic and is easier to access from C.
-    pub fn download_actor(&self) -> impl Future<Output = ()> + 'static {
-        // Important: This needs to run outside of the future, so that the channel is created before
-        // this function completes.
-        let mut actor = DownloadActor::new(self.inner.clone());
-        async move { actor.run().await }
-    }
+    /// To start the tasks, see the documentation on [AsyncDatabaseTasks].
+    ///
+    /// By exposing these async tasks instead of starting them automatically, the SDK stays
+    /// executor-agnostic and is easier to access from C.
+    #[must_use = "Returned tasks still need to be spawned on an async runtime"]
+    pub fn async_tasks(&self) -> AsyncDatabaseTasks {
+        let mut downloads = DownloadActor::new(self.inner.clone());
+        let mut uploads = UploadActor::new(self.inner.clone());
 
-    /// Starts an actor responsible for watching the local database for local writes that need to
-    /// be uploaded.
-    ///
-    /// By exposing this as an entrypoint instead of starting the task on a specific entrypoint,
-    /// the SDK stays executor-agnostic and is easier to access from C.
-    pub fn upload_actor(&self) -> impl Future<Output = ()> + 'static {
-        let mut actor = UploadActor::new(self.inner.clone());
-        async move { actor.run().await }
+        AsyncDatabaseTasks::new(
+            async move { downloads.run().await }.boxed(),
+            async move { uploads.run().await }.boxed(),
+        )
     }
 
     /// Requests the download actor, started with [Self::download_actor], to start establishing a
