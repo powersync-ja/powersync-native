@@ -128,7 +128,9 @@ namespace powersync {
         internal::powersync_db_free(this->raw);
 
         // Dropping the client will asynchronously complete sync actors, so join that.
-        this->worker->join();
+        if (this->worker.has_value()) {
+            this->worker->join();
+        }
     }
 
     LeasedConnection::~LeasedConnection() {
