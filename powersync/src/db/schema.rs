@@ -274,7 +274,7 @@ mod test {
         }))
         .unwrap();
 
-        assert_eq!(
+        assert!(
             value
                 .as_object()
                 .unwrap()
@@ -282,7 +282,6 @@ mod test {
                 .unwrap()
                 .as_bool()
                 .unwrap(),
-            true
         );
     }
 
@@ -293,7 +292,7 @@ mod test {
         }))
         .unwrap();
 
-        assert_eq!(
+        assert!(
             value
                 .as_object()
                 .unwrap()
@@ -301,7 +300,6 @@ mod test {
                 .unwrap()
                 .as_bool()
                 .unwrap(),
-            true
         );
     }
 
@@ -313,14 +311,13 @@ mod test {
         .unwrap();
         let value = value.as_object().unwrap();
 
-        assert_eq!(value.get("include_old").unwrap().as_bool().unwrap(), true);
-        assert_eq!(
-            value
+        assert!(value.get("include_old").unwrap().as_bool().unwrap());
+        assert!(
+            !value
                 .get("include_old_only_when_changed")
                 .unwrap()
                 .as_bool()
                 .unwrap(),
-            false
         );
     }
 
@@ -332,14 +329,13 @@ mod test {
         .unwrap();
         let value = value.as_object().unwrap();
 
-        assert_eq!(value.get("include_old").unwrap().as_bool().unwrap(), true);
-        assert_eq!(
-            value
+        assert!(value.get("include_old").unwrap().as_bool().unwrap());
+        assert!(
+            !value
                 .get("include_old_only_when_changed")
                 .unwrap()
                 .as_bool()
                 .unwrap(),
-            false
         );
     }
 }

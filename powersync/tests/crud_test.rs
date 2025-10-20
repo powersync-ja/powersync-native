@@ -1,8 +1,192 @@
 use futures_lite::{StreamExt, future};
 use powersync::PowerSyncDatabase;
+use powersync::schema::{Column, Schema, Table, TrackPreviousValues};
 use powersync_test_utils::{DatabaseTest, execute, query_all};
 use rusqlite::params;
 use serde_json::{Value, json};
+
+#[test]
+fn include_metadata() {
+    future::block_on(async move {
+        let test = DatabaseTest::new();
+        let db = PowerSyncDatabase::new(test.in_memory(), {
+            let mut schema = Schema::default();
+            schema
+                .tables
+                .push(Table::create("lists", vec![Column::text("name")], |tbl| {
+                    tbl.track_metadata = true
+                }));
+            schema
+        });
+
+        {
+            let writer = db.writer().await.unwrap();
+            writer
+                .execute(
+                    "INSERT INTO lists (id, name, _metadata) VALUES (uuid(), ?, ?)",
+                    params!["entry", "so meta"],
+                )
+                .unwrap();
+        }
+
+        let batch = db.next_crud_transaction().await.unwrap().unwrap();
+        assert_eq!(batch.crud[0].metadata, Some("so meta".to_string()));
+    })
+}
+
+#[test]
+fn include_old_values() {
+    future::block_on(async move {
+        let test = DatabaseTest::new();
+        let db = PowerSyncDatabase::new(test.in_memory(), {
+            let mut schema = Schema::default();
+            schema.tables.push(Table::create(
+                "lists",
+                vec![Column::text("name"), Column::text("content")],
+                |tbl| tbl.track_previous_values = Some(TrackPreviousValues::all()),
+            ));
+            schema
+        });
+
+        {
+            let writer = db.writer().await.unwrap();
+            writer
+                .execute(
+                    "INSERT INTO lists (id, name, content) VALUES (uuid(), ?, ?)",
+                    params!["entry", "content"],
+                )
+                .unwrap();
+            writer.execute("DELETE FROM ps_crud", params![]).unwrap();
+            writer
+                .execute("UPDATE lists SET name = ?", params!["new name"])
+                .unwrap();
+        }
+
+        let batch = db.next_crud_transaction().await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_string(&batch.crud[0].previous_values).unwrap(),
+            "{\"content\":\"content\",\"name\":\"entry\"}"
+        );
+    })
+}
+
+#[test]
+fn include_old_values_with_filter() {
+    future::block_on(async move {
+        let test = DatabaseTest::new();
+        let db = PowerSyncDatabase::new(test.in_memory(), {
+            let mut schema = Schema::default();
+            schema.tables.push(Table::create(
+                "lists",
+                vec![Column::text("name"), Column::text("content")],
+                |tbl| {
+                    tbl.track_previous_values = Some(TrackPreviousValues {
+                        column_filter: Some(vec!["name".into()]),
+                        only_when_changed: false,
+                    })
+                },
+            ));
+            schema
+        });
+
+        {
+            let writer = db.writer().await.unwrap();
+            writer
+                .execute(
+                    "INSERT INTO lists (id, name, content) VALUES (uuid(), ?, ?)",
+                    params!["entry", "content"],
+                )
+                .unwrap();
+            writer.execute("DELETE FROM ps_crud", params![]).unwrap();
+            writer
+                .execute(
+                    "UPDATE lists SET name = ?, content = ?",
+                    params!["new name", "new content"],
+                )
+                .unwrap();
+        }
+
+        let batch = db.next_crud_transaction().await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_string(&batch.crud[0].previous_values).unwrap(),
+            "{\"name\":\"entry\"}"
+        );
+    })
+}
+
+#[test]
+fn include_old_values_when_changed() {
+    future::block_on(async move {
+        let test = DatabaseTest::new();
+        let db = PowerSyncDatabase::new(test.in_memory(), {
+            let mut schema = Schema::default();
+            schema.tables.push(Table::create(
+                "lists",
+                vec![Column::text("name"), Column::text("content")],
+                |tbl| {
+                    tbl.track_previous_values = Some(TrackPreviousValues {
+                        column_filter: None,
+                        only_when_changed: true,
+                    })
+                },
+            ));
+            schema
+        });
+
+        {
+            let writer = db.writer().await.unwrap();
+            writer
+                .execute(
+                    "INSERT INTO lists (id, name, content) VALUES (uuid(), ?, ?)",
+                    params!["entry", "content"],
+                )
+                .unwrap();
+            writer.execute("DELETE FROM ps_crud", params![]).unwrap();
+            writer
+                .execute("UPDATE lists SET name = ?", params!["new name"])
+                .unwrap();
+        }
+
+        let batch = db.next_crud_transaction().await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_string(&batch.crud[0].previous_values).unwrap(),
+            "{\"name\":\"entry\"}"
+        );
+    })
+}
+
+#[test]
+fn ignore_empty_update() {
+    future::block_on(async move {
+        let test = DatabaseTest::new();
+        let db = PowerSyncDatabase::new(test.in_memory(), {
+            let mut schema = Schema::default();
+            schema.tables.push(Table::create(
+                "lists",
+                vec![Column::text("name"), Column::text("content")],
+                |tbl| tbl.ignore_empty_updates = true,
+            ));
+            schema
+        });
+
+        {
+            let writer = db.writer().await.unwrap();
+            writer
+                .execute(
+                    "INSERT INTO lists (id, name, content) VALUES (uuid(), ?, ?)",
+                    params!["entry", "content"],
+                )
+                .unwrap();
+            writer.execute("DELETE FROM ps_crud", params![]).unwrap();
+            writer
+                .execute("UPDATE lists SET name = ?", params!["entry"])
+                .unwrap();
+        }
+
+        let batch = db.next_crud_transaction().await.unwrap();
+        assert!(batch.is_none());
+    })
+}
 
 #[test]
 fn insert() {
