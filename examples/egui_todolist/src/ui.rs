@@ -25,7 +25,6 @@ struct SharedTodoListState {
 
 struct SelectedTodoList {
     id: String,
-    name: String,
     stream_params: Value,
     items: Vec<TodoEntry>,
     task: JoinHandle<()>,
@@ -172,7 +171,6 @@ impl<'a> TodoAppContent<'a> {
 
         *self.selected_list = Some(SelectedTodoList {
             id: list.id.clone(),
-            name: list.name.clone(),
             stream_params,
             items: vec![],
             task,
@@ -225,12 +223,25 @@ impl<'a> TodoAppContent<'a> {
             }
         };
 
+        let name = {
+            let lists = self.app.shared.lists.lock().unwrap();
+            let mut name = None;
+            for list in &*lists {
+                if list.id == state.id {
+                    name = Some(list.name.clone());
+                    break;
+                }
+            }
+
+            name
+        };
+
         ui.horizontal(|ui| {
             if ui.button("Back to overview").clicked() {
                 navigate_back_requested = true;
             }
 
-            ui.heading(&state.name);
+            ui.heading(name.as_deref().unwrap_or("Unknown list"));
         });
 
         if did_sync {
