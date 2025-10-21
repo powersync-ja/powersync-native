@@ -9,6 +9,17 @@ namespace powersync::internal {
 #include "helpers.h"
 
 namespace powersync {
+    void set_logger(LogLevel level, void(*logger)(LogLevel, const char*)) {
+        auto wrapper = internal::CppLogger {
+            .level = static_cast<internal::LogLevel>(level),
+            .native_log = reinterpret_cast<void(*)(internal::LogLevel, const char *)>(logger),
+        };
+
+        if (auto rc = internal::powersync_install_logger(wrapper)) {
+            throw Exception(rc, "Could not set logger");
+        }
+    }
+
     static void handle_result(internal::PowerSyncResultCode rc) {
         if (rc != internal::PowerSyncResultCode::OK) {
             auto msg = internal::powersync_last_error_desc();

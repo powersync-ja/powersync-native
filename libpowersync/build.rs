@@ -10,6 +10,7 @@ fn main() {
         .expect("Unable to generate bindings")
         .write_to_file("src/bindings.h");
 
+    return;
     cc::Build::new()
         .cpp(true)
         .std("c++17")

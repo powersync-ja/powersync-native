@@ -12,6 +12,14 @@ enum class ColumnType {
   Real = 2,
 };
 
+enum class LogLevel {
+  Error = 0,
+  Warn = 1,
+  Info = 2,
+  Debug = 3,
+  Trace = 4,
+};
+
 enum class PowerSyncResultCode {
   OK = 0,
   ERROR = 1,
@@ -53,6 +61,11 @@ struct ConnectionLeaseResult {
   RawConnectionLease *lease;
 };
 
+struct CppLogger {
+  LogLevel level;
+  void (*native_log)(LogLevel level, const char *line);
+};
+
 extern "C" {
 
 void powersync_completion_handle_complete_credentials(CppCompletionHandle *handle,
@@ -92,6 +105,8 @@ void powersync_free_str(char *str);
 ///
 /// This blocks the thread until the database is closed.
 void powersync_run_tasks(const RawPowerSyncDatabase *db);
+
+int powersync_install_logger(CppLogger logger);
 
 }  // extern "C"
 

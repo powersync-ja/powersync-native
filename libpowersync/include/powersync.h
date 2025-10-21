@@ -26,6 +26,16 @@ namespace powersync {
     };
   }
 
+  enum class LogLevel {
+    Error = 0,
+    Warn = 1,
+    Info = 2,
+    Debug = 3,
+    Trace = 4,
+  };
+
+  void set_logger(LogLevel level, void(*logger)(LogLevel, const char*));
+
   enum ColumnType {
     TEXT,
     INTEGER,
@@ -155,9 +165,9 @@ public:
 class Exception final : public std::exception {
 private:
   const int rc;
-  char* msg;
+  const char* msg;
 public:
-  explicit Exception(int rc, char* msg) : rc(rc), msg(msg) {}
+  explicit Exception(int rc, const char* msg) : rc(rc), msg(msg) {}
 
   [[nodiscard]] const char *what() const noexcept override;
   ~Exception() noexcept override;

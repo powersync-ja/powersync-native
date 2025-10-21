@@ -57,6 +57,9 @@ public:
 
 int main() {
     using namespace powersync;
+    set_logger(LogLevel::Trace, [](LogLevel _, const char* message) {
+        std::cout << message << std::endl;
+    });
 
     Schema schema{};
     schema.tables.emplace_back(Table{"users", {

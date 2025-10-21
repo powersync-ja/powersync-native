@@ -12,4 +12,5 @@ mod connector;
 mod database;
 mod error;
 mod executor;
+mod logger;
 mod schema;

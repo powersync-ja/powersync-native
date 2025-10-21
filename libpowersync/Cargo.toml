@@ -13,7 +13,7 @@ http-client = { version = "6.5.3", features = ["curl_client"], default-features 
 rusqlite = { version = "0.37.0", features = ["load_extension", "bundled"] }
 async-executor = "1.13.3"
 futures-lite = "2.6.1"
-log = "0.4.28"
+log = { version = "0.4.28", features = ["std"] }
 async-oneshot = "0.5.9"
 
 [build-dependencies]
