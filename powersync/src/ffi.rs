@@ -1,7 +1,12 @@
+use crate::db::crud::CrudTransactionStream;
 use crate::db::internal::InnerPowerSyncState;
 use crate::error::PowerSyncError;
 use crate::sync::coordinator::SyncCoordinator;
-use crate::{BackendConnector, LeasedConnection, PowerSyncDatabase, SyncOptions};
+use crate::{
+    BackendConnector, CrudTransaction, LeasedConnection, PowerSyncDatabase, SyncOptions,
+    SyncStatusData,
+};
+use futures_lite::Stream;
 use std::ffi::c_void;
 use std::sync::Arc;
 
@@ -72,6 +77,30 @@ impl RawPowerSyncDatabase {
         sync.connect(SyncOptions::new(connector), inner).await;
 
         Ok(())
+    }
+
+    pub fn sync_status(&self) -> Arc<SyncStatusData> {
+        let RawPowerSyncReference { inner, .. } = self.as_ref();
+        inner.status.current_snapshot()
+    }
+
+    pub fn crud_transactions<'a>(
+        &'a self,
+    ) -> impl Stream<Item = Result<CrudTransaction<'a>, PowerSyncError>> + 'a {
+        let RawPowerSyncReference { inner, .. } = self.as_ref();
+        CrudTransactionStream::new(inner)
+    }
+
+    pub async fn complete_crud_items(
+        &self,
+        last_item_id: i64,
+        write_checkpoint: Option<i64>,
+    ) -> Result<(), PowerSyncError> {
+        let RawPowerSyncReference { inner, .. } = self.as_ref();
+
+        inner
+            .complete_crud_items(last_item_id, write_checkpoint)
+            .await
     }
 
     /// ## Safety

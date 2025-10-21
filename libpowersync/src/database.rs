@@ -112,6 +112,6 @@ extern "C" fn powersync_last_error_desc() -> *mut c_char {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn powersync_free_str(str: *mut c_char) {
-    drop(unsafe { CString::from_raw(str) });
+extern "C" fn powersync_free_str(str: *const c_char) {
+    drop(unsafe { CString::from_raw(str.cast_mut()) });
 }

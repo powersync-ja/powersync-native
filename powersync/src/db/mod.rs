@@ -112,7 +112,7 @@ impl PowerSyncDatabase {
     pub fn crud_transactions<'a>(
         &'a self,
     ) -> impl Stream<Item = Result<CrudTransaction<'a>, PowerSyncError>> + 'a {
-        CrudTransactionStream::new(self)
+        CrudTransactionStream::new(&self.inner)
     }
 
     /// Returns the first transaction that has not been marked as completed.

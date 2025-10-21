@@ -2,6 +2,7 @@ use http_client::http_types::StatusCode;
 use rusqlite::Error as SqliteError;
 use rusqlite::types::FromSqlError;
 use std::error::Error;
+#[cfg(feature = "ffi")]
 use std::ffi::c_int;
 use std::io;
 use std::sync::Arc;

@@ -57,7 +57,7 @@ public:
 
 int main() {
     using namespace powersync;
-    set_logger(LogLevel::Trace, [](LogLevel _, const char* message) {
+    set_logger(LogLevel::Info, [](LogLevel _, const char* message) {
         std::cout << message << std::endl;
     });
 
@@ -68,12 +68,35 @@ int main() {
 
     auto db = std::make_shared<Database>(std::move(Database::in_memory(schema)));
     db->spawn_sync_thread();
-    auto connector = std::make_shared<DemoConnector>(db);
-    db->connect(connector);
+    //auto connector = std::make_shared<DemoConnector>(db);
+    //db->connect(connector);
 
     {
         auto writer = db->writer();
         check_rc(sqlite3_exec(writer, "INSERT INTO users (id, name) VALUES (uuid(), 'Simon');", nullptr, nullptr, nullptr));
+    }
+
+    {
+        auto stream = db->get_crud_transactions();
+        while (stream.advance()) {
+            auto tx = stream.current();
+            std::cout << "Has transaction, id " << *tx.id << std::endl;
+            for (const auto& item : tx.crud) {
+                std::cout << "Has item: " << item.table << ": " << item.id << std::endl;
+            }
+
+            tx.complete();
+        }
+
+        std::cout << "Done with first transactions iteration"  << std::endl;
+    }
+
+    // Should have no further transactions now, we've completed them.
+    {
+        auto stream = db->get_crud_transactions();
+        auto has_tx = stream.advance();
+
+        std::cout << "Has transaction: " << has_tx << std::endl;
     }
 
     {

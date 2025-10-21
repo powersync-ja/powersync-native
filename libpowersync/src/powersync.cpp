@@ -27,6 +27,19 @@ namespace powersync {
         }
     }
 
+    static std::string resolve_string(internal::StringView& source) {
+        size_t count = source.length;
+        return {source.value, count};
+    }
+
+    static std::optional<std::string> resolve_string(internal::StringView& source, bool exists) {
+        if (!exists) {
+            return std::nullopt;
+        }
+
+        return resolve_string(source);
+    }
+
     void internal::RawCompletionHandle::send_credentials(const char* endpoint, const char* token) {
         powersync_completion_handle_complete_credentials(&this->rust_handle, endpoint, token);
     }
@@ -212,5 +225,59 @@ namespace powersync {
 
     LeasedConnection::operator sqlite3 *() const {
         return this->db;
+    }
+
+    CrudTransactions Database::get_crud_transactions() const {
+        auto iterator = internal::powersync_crud_transactions_new(&this->raw);
+        return {*this, iterator};
+    }
+
+    bool CrudTransactions::advance() {
+        bool has_next = false;
+        handle_result(internal::powersync_crud_transactions_step(this->rust_iterator, &has_next));
+        return has_next;
+    }
+
+    CrudTransaction CrudTransactions::current() const {
+        auto tx = internal::powersync_crud_transactions_current(this->rust_iterator);
+        std::vector<CrudEntry> crud;
+
+        for (intptr_t i = 0; i < tx.crud_length; i++) {
+            auto entry = internal::powersync_crud_transactions_current_crud_item(this->rust_iterator, i);
+
+            crud.push_back({
+                .client_id = entry.client_id,
+                .transaction_id = entry.transaction_id,
+                .update_type = static_cast<UpdateType>(entry.update_type),
+                .table = resolve_string(entry.table),
+                .id = resolve_string(entry.id),
+                .metadata = resolve_string(entry.metadata, entry.has_metadata),
+                .data = resolve_string(entry.data, entry.has_data),
+                .previous_values = resolve_string(entry.previous_values, entry.has_previous_values),
+            });
+        }
+
+        return CrudTransaction {
+            .db = this->db,
+            .last_item_id = tx.last_item_id,
+            .id = tx.has_id ? std::make_optional(tx.id) : std::nullopt,
+            .crud = crud,
+        };
+    }
+
+    CrudTransactions::~CrudTransactions() {
+        if (this->rust_iterator) {
+            internal::powersync_crud_transactions_free(this->rust_iterator);
+        }
+    }
+
+    void CrudTransaction::complete() const {
+        this->complete(std::nullopt);
+    }
+
+    void CrudTransaction::complete(std::optional<int64_t> custom_write_checkpoint) const {
+        internal::powersync_crud_complete(&db.raw, this->last_item_id,
+        custom_write_checkpoint.has_value(),
+        custom_write_checkpoint.has_value() ? custom_write_checkpoint.value(): 0);
     }
 }

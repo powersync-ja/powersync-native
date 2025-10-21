@@ -26,6 +26,36 @@ namespace powersync {
     };
   }
 
+  enum class UpdateType {
+    PUT = 1,
+    PATCH = 2,
+    DELETE = 3,
+  };
+
+  struct CrudEntry {
+    int64_t client_id;
+    int64_t transaction_id;
+    UpdateType update_type;
+    std::string table;
+    std::string id;
+    std::optional<std::string> metadata;
+    std::optional<std::string> data;
+    std::optional<std::string> previous_values;
+  };
+
+  class Database;
+
+  class CrudTransaction {
+  public:
+    const Database& db;
+    int64_t last_item_id;
+    std::optional<int64_t> id;
+    std::vector<CrudEntry> crud;
+
+    void complete() const;
+    void complete(std::optional<int64_t> custom_write_checkpoint) const;
+  };
+
   enum class LogLevel {
     Error = 0,
     Warn = 1,
@@ -133,8 +163,30 @@ public:
   virtual ~BackendConnector() = default;
 };
 
+class CrudTransactions {
+  const Database& db;
+  void* rust_iterator;
+
+  CrudTransactions(const Database& db, void* rust_iterator): db(db), rust_iterator(rust_iterator) {}
+
+  // The rust iterator can't be copied.
+  CrudTransactions(const CrudTransactions&) = delete;
+
+  friend class Database;
+public:
+  CrudTransactions(CrudTransactions&& other) noexcept:
+    db(other.db),
+    rust_iterator(other.rust_iterator) {
+    other.rust_iterator = nullptr;
+  }
+
+  bool advance();
+  CrudTransaction current() const;
+
+  ~CrudTransactions();
+};
+
 class Database {
-private:
   internal::RawPowerSyncDatabase raw;
   std::optional<std::thread> worker;
 
@@ -142,6 +194,8 @@ private:
 
   // Databases can't be copied, the internal::RawPowerSyncDatabase is an exclusive reference in Rust.
   Database(const Database&) = delete;
+
+  friend class CrudTransaction;
 public:
   Database(Database&& other) noexcept:
     raw(other.raw),
@@ -153,6 +207,11 @@ public:
   void connect(std::shared_ptr<BackendConnector> connector);
   void disconnect();
   void spawn_sync_thread();
+
+  /// Returns an iterator of completed crud transactions made against this database.
+  ///
+  /// This database must outlive the returned transactions stream.
+  CrudTransactions get_crud_transactions() const;
 
   ~Database();
 

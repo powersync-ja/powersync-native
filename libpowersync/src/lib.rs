@@ -9,8 +9,10 @@ macro_rules! ps_try {
 
 mod completion_handle;
 mod connector;
+mod crud;
 mod database;
 mod error;
 mod executor;
 mod logger;
 mod schema;
+mod status;

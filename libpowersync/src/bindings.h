@@ -29,6 +29,32 @@ struct RawConnectionLease;
 
 using CppCompletionHandle = void*;
 
+struct RawCrudTransaction {
+  int64_t id;
+  int64_t last_item_id;
+  bool has_id;
+  intptr_t crud_length;
+};
+
+struct StringView {
+  const char *value;
+  intptr_t length;
+};
+
+struct RawCrudEntry {
+  int64_t client_id;
+  int64_t transaction_id;
+  int32_t update_type;
+  StringView table;
+  StringView id;
+  StringView metadata;
+  bool has_metadata;
+  StringView data;
+  bool has_data;
+  StringView previous_values;
+  bool has_previous_values;
+};
+
 struct Column {
   const char *name;
   ColumnType column_type;
@@ -82,6 +108,21 @@ void powersync_completion_handle_complete_error_msg(CppCompletionHandle *handle,
 
 void powersync_completion_handle_free(CppCompletionHandle *handle);
 
+void *powersync_crud_transactions_new(const RawPowerSyncDatabase *db);
+
+PowerSyncResultCode powersync_crud_transactions_step(void *stream, bool *has_next);
+
+RawCrudTransaction powersync_crud_transactions_current(const void *stream);
+
+RawCrudEntry powersync_crud_transactions_current_crud_item(const void *stream, intptr_t index);
+
+PowerSyncResultCode powersync_crud_complete(const RawPowerSyncDatabase *db,
+                                            int64_t last_item_id,
+                                            bool has_checkpoint,
+                                            int64_t checkpoint);
+
+void powersync_crud_transactions_free(void *stream);
+
 PowerSyncResultCode powersync_db_in_memory(RawSchema schema, RawPowerSyncDatabase *out_db);
 
 PowerSyncResultCode powersync_db_connect(const RawPowerSyncDatabase *db,
@@ -99,7 +140,7 @@ void powersync_db_free(RawPowerSyncDatabase db);
 
 char *powersync_last_error_desc();
 
-void powersync_free_str(char *str);
+void powersync_free_str(const char *str);
 
 /// Runs asynchronous PowerSync tasks on the current thread.
 ///
