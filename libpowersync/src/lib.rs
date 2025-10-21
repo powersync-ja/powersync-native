@@ -7,6 +7,8 @@ macro_rules! ps_try {
     };
 }
 
+mod completion_handle;
+mod connector;
 mod database;
 mod error;
 mod executor;

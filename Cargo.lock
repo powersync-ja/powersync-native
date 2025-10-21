@@ -2863,6 +2863,7 @@ name = "libpowersync"
 version = "0.1.0"
 dependencies = [
  "async-executor",
+ "async-oneshot",
  "cbindgen",
  "cc",
  "futures-lite 2.6.1",

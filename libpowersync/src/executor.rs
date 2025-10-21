@@ -7,7 +7,7 @@ use powersync::ffi::RawPowerSyncDatabase;
 /// This blocks the thread until the database is closed.
 #[unsafe(no_mangle)]
 pub extern "C" fn powersync_run_tasks(db: &RawPowerSyncDatabase) {
-    let tasks = unsafe { RawPowerSyncDatabase::clone_into_db(db) }.async_tasks();
+    let tasks = RawPowerSyncDatabase::clone_into_db(db).async_tasks();
     let executor = Executor::new();
     let tasks = tasks.spawn_with(|f| executor.spawn(f));
 

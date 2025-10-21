@@ -1,3 +1,4 @@
+use crate::connector::{CppConnector, wrap_cpp_connector};
 use crate::error::{LAST_ERROR, PowerSyncResultCode};
 use crate::schema::RawSchema;
 use futures_lite::future;
@@ -47,6 +48,17 @@ extern "C" fn powersync_db_in_memory(
     )
     .into();
 
+    PowerSyncResultCode::OK
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn powersync_db_connect(
+    db: &RawPowerSyncDatabase,
+    connector: *const CppConnector,
+) -> PowerSyncResultCode {
+    ps_try!(future::block_on(
+        db.connect(unsafe { wrap_cpp_connector(connector) })
+    ));
     PowerSyncResultCode::OK
 }
 

@@ -16,6 +16,27 @@ namespace powersync {
         }
     }
 
+    void internal::RawCompletionHandle::send_credentials(const char* endpoint, const char* token) {
+        powersync_completion_handle_complete_credentials(&this->rust_handle, endpoint, token);
+    }
+
+    void internal::RawCompletionHandle::send_empty() {
+        powersync_completion_handle_complete_empty(&this->rust_handle);
+    }
+
+    void internal::RawCompletionHandle::send_error_code(int code) {
+        powersync_completion_handle_complete_error_code(&this->rust_handle, code);
+    }
+
+    void internal::RawCompletionHandle::send_error_message(int code, const char* message) {
+        powersync_completion_handle_complete_error_msg(&this->rust_handle, code, message);
+    }
+
+    internal::RawCompletionHandle::~RawCompletionHandle() {
+        powersync_completion_handle_free(&this->rust_handle);
+    }
+
+
     const char * Exception::what() const noexcept {
         if (this->msg) {
             return this->msg;
@@ -99,6 +120,45 @@ namespace powersync {
         return Database(db);
     }
 
+    void Database::connect(std::shared_ptr<BackendConnector> connector) {
+        struct RawConnector: internal::CppConnector {
+            std::shared_ptr<BackendConnector> connector;
+
+            RawConnector(std::shared_ptr<BackendConnector> connector) : CppConnector(), connector(std::move(connector)) {
+                this->upload_data = &upload_data_impl;
+                this->fetch_credentials = &fetch_credentials_impl;
+                this->drop = &drop_impl;
+            }
+
+            static void upload_data_impl(CppConnector* connector, internal::CppCompletionHandle handle) {
+                auto raw = static_cast<RawConnector*>(connector);
+                CompletionHandle<std::monostate> wrapped(internal::RawCompletionHandle {
+                    .rust_handle = handle
+                });
+
+                raw->connector->upload_data(wrapped);
+            }
+
+            static void fetch_credentials_impl(CppConnector* connector, internal::CppCompletionHandle handle) {
+                auto raw = static_cast<RawConnector*>(connector);
+                CompletionHandle<PowerSyncCredentials> wrapped(internal::RawCompletionHandle {
+                                    .rust_handle = handle
+                                });
+
+                raw->connector->fetch_token(wrapped);
+            }
+
+            static void drop_impl(CppConnector* connector) {
+                auto raw = static_cast<RawConnector*>(connector);
+                delete raw;
+            }
+        };
+
+        const auto raw_connector = new RawConnector(connector);
+        const auto rc = internal::powersync_db_connect(&raw, raw_connector);
+        handle_result(rc);
+    }
+
     void Database::spawn_sync_thread() {
         auto raw = &this->raw;
         std::thread thread([raw]() {
@@ -124,8 +184,10 @@ namespace powersync {
     }
 
     Database::~Database() {
-        // First, clear the database client.
-        internal::powersync_db_free(this->raw);
+        if (this->raw.inner) {
+            // First, clear the database client (unless resources have been moved out of this class).
+            internal::powersync_db_free(this->raw);
+        }
 
         // Dropping the client will asynchronously complete sync actors, so join that.
         if (this->worker.has_value()) {
@@ -141,4 +203,3 @@ namespace powersync {
         return this->db;
     }
 }
-

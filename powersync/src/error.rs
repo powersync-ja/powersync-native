@@ -1,11 +1,11 @@
-use std::error::Error;
-use std::io;
-use std::sync::Arc;
-use std::{borrow::Cow, fmt::Display};
-
 use http_client::http_types::StatusCode;
 use rusqlite::Error as SqliteError;
 use rusqlite::types::FromSqlError;
+use std::error::Error;
+use std::ffi::c_int;
+use std::io;
+use std::sync::Arc;
+use std::{borrow::Cow, fmt::Display};
 use thiserror::Error;
 
 /// A [RawPowerSyncError], but boxed.
@@ -18,8 +18,26 @@ pub struct PowerSyncError {
 }
 
 impl PowerSyncError {
-    pub(crate) fn argument_error(desc: impl Into<Cow<'static, str>>) -> Self {
+    pub fn argument_error(desc: impl Into<Cow<'static, str>>) -> Self {
         RawPowerSyncError::ArgumentError { desc: desc.into() }.into()
+    }
+
+    #[cfg(feature = "ffi")]
+    pub fn user_error(code: c_int) -> Self {
+        RawPowerSyncError::CppUserError {
+            code,
+            message: None,
+        }
+        .into()
+    }
+
+    #[cfg(feature = "ffi")]
+    pub fn user_error_with_message(code: c_int, msg: String) -> Self {
+        RawPowerSyncError::CppUserError {
+            code,
+            message: Some(msg),
+        }
+        .into()
     }
 }
 
@@ -98,4 +116,10 @@ pub(crate) enum RawPowerSyncError {
     InvalidCredentials,
     #[error("Unexpected HTTP status code from PowerSync service: {code}")]
     UnexpectedStatusCode { code: StatusCode },
+    #[cfg(feature = "ffi")]
+    #[error("Error returned in C++ callback: code {code}, message: {message:?}")]
+    CppUserError {
+        code: c_int,
+        message: Option<String>,
+    },
 }

@@ -14,6 +14,7 @@ rusqlite = { version = "0.37.0", features = ["load_extension", "bundled"] }
 async-executor = "1.13.3"
 futures-lite = "2.6.1"
 log = "0.4.28"
+async-oneshot = "0.5.9"
 
 [build-dependencies]
 cbindgen = "0.29.0"

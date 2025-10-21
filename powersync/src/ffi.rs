@@ -1,7 +1,7 @@
 use crate::db::internal::InnerPowerSyncState;
 use crate::error::PowerSyncError;
 use crate::sync::coordinator::SyncCoordinator;
-use crate::{LeasedConnection, PowerSyncDatabase};
+use crate::{BackendConnector, LeasedConnection, PowerSyncDatabase, SyncOptions};
 use std::ffi::c_void;
 use std::sync::Arc;
 
@@ -10,6 +10,11 @@ use std::sync::Arc;
 pub struct RawPowerSyncDatabase {
     sync: *mut c_void,  // SyncCoordinator
     inner: *mut c_void, // InnerPowerSyncState
+}
+
+struct RawPowerSyncReference<'a> {
+    sync: &'a SyncCoordinator,
+    inner: &'a InnerPowerSyncState,
 }
 
 impl RawPowerSyncDatabase {
@@ -32,26 +37,41 @@ impl RawPowerSyncDatabase {
         }
     }
 
-    pub async fn lease_reader<'a>(&'a self) -> Result<impl LeasedConnection + 'a, PowerSyncError> {
-        let inner: &'a InnerPowerSyncState = unsafe {
-            // Safety: Valid reference by construction of struct
-            (self.inner as *const InnerPowerSyncState)
-                .as_ref()
-                .unwrap_unchecked()
-        };
+    fn as_ref(&self) -> RawPowerSyncReference {
+        RawPowerSyncReference {
+            sync: unsafe {
+                // Safety: Valid reference by construction of struct
+                (self.sync as *const SyncCoordinator)
+                    .as_ref()
+                    .unwrap_unchecked()
+            },
+            inner: unsafe {
+                // Safety: Valid reference by construction of struct
+                (self.inner as *const InnerPowerSyncState)
+                    .as_ref()
+                    .unwrap_unchecked()
+            },
+        }
+    }
 
+    pub async fn lease_reader<'a>(&'a self) -> Result<impl LeasedConnection + 'a, PowerSyncError> {
+        let RawPowerSyncReference { inner, .. } = self.as_ref();
         inner.reader().await
     }
 
     pub async fn lease_writer<'a>(&'a self) -> Result<impl LeasedConnection + 'a, PowerSyncError> {
-        let inner: &'a InnerPowerSyncState = unsafe {
-            // Safety: Valid reference by construction of struct
-            (self.inner as *const InnerPowerSyncState)
-                .as_ref()
-                .unwrap_unchecked()
-        };
-
+        let RawPowerSyncReference { inner, .. } = self.as_ref();
         inner.writer().await
+    }
+
+    pub async fn connect(
+        &self,
+        connector: impl BackendConnector + 'static,
+    ) -> Result<(), PowerSyncError> {
+        let RawPowerSyncReference { sync, inner } = self.as_ref();
+        sync.connect(SyncOptions::new(connector), inner).await;
+
+        Ok(())
     }
 
     /// ## Safety

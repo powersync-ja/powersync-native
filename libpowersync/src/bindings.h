@@ -19,6 +19,8 @@ enum class PowerSyncResultCode {
 
 struct RawConnectionLease;
 
+using CppCompletionHandle = void*;
+
 struct Column {
   const char *name;
   ColumnType column_type;
@@ -40,6 +42,12 @@ struct RawSchema {
   uintptr_t tables_len;
 };
 
+struct CppConnector {
+  void (*upload_data)(CppConnector*, CppCompletionHandle);
+  void (*fetch_credentials)(CppConnector*, CppCompletionHandle);
+  void (*drop)(CppConnector*);
+};
+
 struct ConnectionLeaseResult {
   sqlite3 *sqlite3;
   RawConnectionLease *lease;
@@ -47,7 +55,24 @@ struct ConnectionLeaseResult {
 
 extern "C" {
 
+void powersync_completion_handle_complete_credentials(CppCompletionHandle *handle,
+                                                      const char *endpoint,
+                                                      const char *token);
+
+void powersync_completion_handle_complete_empty(CppCompletionHandle *handle);
+
+void powersync_completion_handle_complete_error_code(CppCompletionHandle *handle, int code);
+
+void powersync_completion_handle_complete_error_msg(CppCompletionHandle *handle,
+                                                    int code,
+                                                    const char *msg);
+
+void powersync_completion_handle_free(CppCompletionHandle *handle);
+
 PowerSyncResultCode powersync_db_in_memory(RawSchema schema, RawPowerSyncDatabase *out_db);
+
+PowerSyncResultCode powersync_db_connect(const RawPowerSyncDatabase *db,
+                                         const CppConnector *connector);
 
 PowerSyncResultCode powersync_db_reader(const RawPowerSyncDatabase *db,
                                         ConnectionLeaseResult *out_lease);
