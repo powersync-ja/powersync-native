@@ -1,3 +1,6 @@
+use event_listener::{Event, EventListener};
+use rusqlite::{Connection, params};
+use std::collections::HashSet;
 use std::{
     fmt::Debug,
     sync::{
@@ -6,9 +9,7 @@ use std::{
     },
 };
 
-use event_listener::{Event, EventListener};
-use rusqlite::{Connection, params};
-
+use crate::util::raw_listener::{CallbackListenerHandle, CallbackListeners};
 use crate::{
     error::PowerSyncError,
     sync::{
@@ -19,15 +20,22 @@ use crate::{
 };
 
 /// An internal struct holding the current sync status, which allows notifying listeners.
+#[derive(Default)]
 pub struct SyncStatus {
     data: Mutex<Arc<SyncStatusData>>,
+    raw_listeners: CallbackListeners<()>,
 }
 
 impl SyncStatus {
     pub(crate) fn new() -> Self {
-        Self {
-            data: Default::default(),
-        }
+        Self::default()
+    }
+
+    pub(crate) fn listener<'a, F: Fn() + Send + Sync + 'a>(
+        &'a self,
+        listener: F,
+    ) -> CallbackListenerHandle<'a, ()> {
+        self.raw_listeners.listen((), listener)
     }
 
     pub fn current_snapshot(&self) -> Arc<SyncStatusData> {
@@ -41,10 +49,13 @@ impl SyncStatus {
         let mut new = data.new_revision();
         let res = update(&mut new);
 
-        // Then notify listeners.
+        // Notify async listeners.
         let old_state = std::mem::replace(&mut *data, Arc::new(new));
         old_state.is_invalidated.store(true, Ordering::SeqCst);
         old_state.invalidated.notify(usize::MAX);
+
+        // Notify external C++ listeners.
+        self.raw_listeners.notify_all();
 
         res
     }

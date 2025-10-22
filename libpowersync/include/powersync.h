@@ -186,6 +186,38 @@ public:
   ~CrudTransactions();
 };
 
+/// An active watcher on a [Database].
+///
+/// Calling the destructor of watchers will unregister the listener.
+class Watcher {
+  void* rust_status_watcher;
+  void* rust_table_watcher;
+  std::function<void()> callback;
+
+  friend class Database;
+  static void dispatch(const void* token);
+
+  public:
+  explicit Watcher(std::function<void()> callback): rust_status_watcher(nullptr), rust_table_watcher(nullptr), callback(callback) {}
+
+  Watcher(const Watcher&) = delete;
+  Watcher(Watcher&& a) noexcept : rust_status_watcher(a.rust_status_watcher), rust_table_watcher(a.rust_table_watcher), callback(std::move(a.callback)) {
+    a.rust_status_watcher = nullptr;
+    a.rust_table_watcher = nullptr;
+  }
+
+  ~Watcher();
+};
+
+class SyncStatus {
+  void* rust_status;
+
+  explicit SyncStatus(void* rust_status): rust_status(rust_status) {}
+  friend class Database;
+public:
+  ~SyncStatus();
+};
+
 class Database {
   internal::RawPowerSyncDatabase raw;
   std::optional<std::thread> worker;
@@ -212,6 +244,12 @@ public:
   ///
   /// This database must outlive the returned transactions stream.
   CrudTransactions get_crud_transactions() const;
+
+  SyncStatus sync_status() const;
+
+  /// The watcher keeps a reference to the current database, which must outlive it.
+  std::unique_ptr<Watcher> watch_sync_status(std::function<void (SyncStatus)> callback) const;
+  std::unique_ptr<Watcher> watch_tables(const std::initializer_list<std::string>& tables, std::function<void ()> callback) const;
 
   ~Database();
 

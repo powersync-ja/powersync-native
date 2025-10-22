@@ -47,6 +47,14 @@ impl StringView {
     }
 }
 
+impl AsRef<str> for StringView {
+    fn as_ref(&self) -> &str {
+        let bytes =
+            unsafe { std::slice::from_raw_parts(self.value as *const u8, self.length as usize) };
+        std::str::from_utf8(bytes).unwrap()
+    }
+}
+
 #[repr(C)]
 pub struct RawCrudTransaction {
     pub id: i64,

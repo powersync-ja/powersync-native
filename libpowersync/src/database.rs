@@ -1,4 +1,5 @@
 use crate::connector::{CppConnector, wrap_cpp_connector};
+use crate::crud::StringView;
 use crate::error::{LAST_ERROR, PowerSyncResultCode};
 use crate::schema::RawSchema;
 use futures_lite::future;
@@ -7,10 +8,11 @@ use powersync::env::PowerSyncEnvironment;
 use powersync::error::PowerSyncError;
 use powersync::ffi::RawPowerSyncDatabase;
 use powersync::schema::Schema;
-use powersync::{ConnectionPool, LeasedConnection, PowerSyncDatabase};
+use powersync::{CallbackListenerHandle, ConnectionPool, LeasedConnection, PowerSyncDatabase};
 use rusqlite::Connection;
 use rusqlite::ffi::sqlite3;
-use std::ffi::{CString, c_char};
+use std::collections::HashSet;
+use std::ffi::{CString, c_char, c_void};
 use std::ops::Deref;
 use std::ptr::null;
 use std::sync::Arc;
@@ -63,6 +65,12 @@ extern "C" fn powersync_db_connect(
 }
 
 #[unsafe(no_mangle)]
+extern "C" fn powersync_db_disconnect(db: &RawPowerSyncDatabase) -> PowerSyncResultCode {
+    ps_try!(future::block_on(db.disconnect()));
+    PowerSyncResultCode::OK
+}
+
+#[unsafe(no_mangle)]
 extern "C" fn powersync_db_reader<'a>(
     db: &'a RawPowerSyncDatabase,
     out_lease: &mut ConnectionLeaseResult<'a>,
@@ -94,6 +102,53 @@ extern "C" fn powersync_db_writer<'a>(
 extern "C" fn powersync_db_return_lease(lease: *mut RawConnectionLease) {
     let lease = unsafe { Box::from_raw(lease) };
     drop(lease);
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn powersync_db_watch_tables<'a>(
+    db: &'a RawPowerSyncDatabase,
+    tables: *const StringView,
+    table_count: usize,
+    listener: extern "C" fn(*const c_void),
+    token: *const c_void,
+) -> *mut c_void {
+    let resolved_tables = {
+        let mut resolved_tables = HashSet::new();
+        let table_names = unsafe { std::slice::from_raw_parts(tables, table_count) };
+
+        for table in table_names {
+            let name: &str = table.as_ref();
+            resolved_tables.insert(name.to_string());
+            resolved_tables.insert(format!("ps_data__{name}"));
+            resolved_tables.insert(format!("ps_data_local__{name}"));
+        }
+
+        resolved_tables
+    };
+
+    #[derive(Clone)]
+    struct PendingListener {
+        listener: extern "C" fn(*const c_void),
+        token: *const c_void,
+    }
+
+    // Safety: We require listeners to be thread-safe in C++.
+    unsafe impl Send for PendingListener {}
+    unsafe impl Sync for PendingListener {}
+
+    let listener = PendingListener { listener, token };
+    let handle: CallbackListenerHandle<'a, HashSet<String>> =
+        db.install_table_listener(resolved_tables, move || {
+            let inner = &listener;
+            (inner.listener)(inner.token);
+        });
+
+    Box::into_raw(Box::new(handle)) as *mut c_void
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn powersync_db_watch_tables_end(watcher: *mut c_void) {
+    drop(unsafe { Box::from_raw(watcher as *mut CallbackListenerHandle<'_, HashSet<String>>) });
 }
 
 #[unsafe(no_mangle)]

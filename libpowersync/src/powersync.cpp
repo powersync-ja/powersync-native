@@ -183,6 +183,40 @@ namespace powersync {
         handle_result(rc);
     }
 
+    void Database::disconnect() {
+        handle_result(internal::powersync_db_disconnect(&raw));
+    }
+
+    SyncStatus Database::sync_status() const {
+        return SyncStatus(internal::powersync_db_status(&this->raw));
+    }
+
+    std::unique_ptr<Watcher> Database::watch_sync_status(std::function<void(SyncStatus)> callback) const {
+        std::unique_ptr<Watcher> watcher;
+        watcher = std::make_unique<Watcher>([callback = std::move(callback), this]() mutable {
+            callback(this->sync_status());
+        });
+
+        auto handle = internal::powersync_db_status_listener(&this->raw, Watcher::dispatch, watcher.get());
+        watcher->rust_status_watcher = handle;
+        return watcher;
+    }
+
+    std::unique_ptr<Watcher> Database::watch_tables(const std::initializer_list<std::string>& tables, std::function<void ()> callback) const {
+        auto watcher = std::make_unique<Watcher>(std::move(callback));
+        std::vector<internal::StringView> table_names;
+        for (const auto& table : tables) {
+            table_names.push_back(internal::StringView {
+                .value = table.data(),
+                .length = static_cast<intptr_t>(table.length()),
+            });
+        }
+
+        auto handle = internal::powersync_db_watch_tables(&this->raw, table_names.data(), table_names.size(), Watcher::dispatch, watcher.get());
+        watcher->rust_table_watcher = handle;
+        return watcher;
+    }
+
     void Database::spawn_sync_thread() {
         auto raw = &this->raw;
         std::thread thread([raw]() {
@@ -279,5 +313,26 @@ namespace powersync {
         internal::powersync_crud_complete(&db.raw, this->last_item_id,
         custom_write_checkpoint.has_value(),
         custom_write_checkpoint.has_value() ? custom_write_checkpoint.value(): 0);
+    }
+
+    void Watcher::dispatch(const void* token) {
+        auto watcher = static_cast<const Watcher*>(token);
+        watcher->callback();
+    }
+
+    Watcher::~Watcher() {
+        if (this->rust_status_watcher) {
+            internal::powersync_db_status_listener_clear(this->rust_status_watcher);
+        }
+
+        if (this->rust_table_watcher) {
+            internal::powersync_db_watch_tables_end(this->rust_table_watcher);
+        }
+    }
+
+    SyncStatus::~SyncStatus() {
+        if (this->rust_status) {
+            internal::powersync_status_free(this->rust_status);
+        }
     }
 }

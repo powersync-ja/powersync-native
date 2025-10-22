@@ -71,6 +71,18 @@ int main() {
     //auto connector = std::make_shared<DemoConnector>(db);
     //db->connect(connector);
 
+    auto watcher = db->watch_tables({"users"}, [db] {
+        std::cout << "Saw change on users table" << std::endl;
+        auto reader = db->reader();
+        sqlite3_stmt *stmt = nullptr;
+        check_rc(sqlite3_prepare_v2(reader, "SELECT id, name FROM users", -1, &stmt, nullptr));
+
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            std::cout << sqlite3_column_text(stmt, 0) << ": " << sqlite3_column_text(stmt, 1) << std::endl;
+        }
+        sqlite3_finalize(stmt);
+    });
+
     {
         auto writer = db->writer();
         check_rc(sqlite3_exec(writer, "INSERT INTO users (id, name) VALUES (uuid(), 'Simon');", nullptr, nullptr, nullptr));
@@ -97,16 +109,5 @@ int main() {
         auto has_tx = stream.advance();
 
         std::cout << "Has transaction: " << has_tx << std::endl;
-    }
-
-    {
-        auto reader = db->reader();
-        sqlite3_stmt *stmt = nullptr;
-        check_rc(sqlite3_prepare_v2(reader, "SELECT id, name FROM users", -1, &stmt, nullptr));
-
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            std::cout << sqlite3_column_text(stmt, 0) << ": " << sqlite3_column_text(stmt, 1) << std::endl;
-        }
-        sqlite3_finalize(stmt);
     }
 }

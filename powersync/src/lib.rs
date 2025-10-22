@@ -6,6 +6,8 @@ mod util;
 
 #[cfg(feature = "ffi")]
 pub mod ffi;
+#[cfg(feature = "ffi")]
+pub use util::raw_listener::CallbackListenerHandle;
 
 pub use db::PowerSyncDatabase;
 pub use db::crud::{CrudEntry, CrudTransaction, UpdateType};

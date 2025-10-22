@@ -1,4 +1,5 @@
 mod bson_split;
+pub mod raw_listener;
 mod shared_future;
 
 pub use bson_split::BsonObjects;

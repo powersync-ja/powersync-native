@@ -103,7 +103,7 @@ impl ConnectionPool {
         } else {
             let guard = self.state.writer.lock_blocking();
             LeasedConnectionImpl::Writer(LeasedWriter {
-                connection: guard,
+                connection: MaybeUninit::new(guard),
                 pool: self,
             })
         }
@@ -118,10 +118,6 @@ impl ConnectionPool {
 
         let updates = serde_json::from_str::<SqliteUpdateNotification>(&rows)
             .map_err(|_| Error::InvalidQuery)?;
-
-        if !updates.tables.is_empty() {
-            self.state.table_notifiers.notify_updates(&updates.tables);
-        }
 
         Ok(updates)
     }
@@ -141,7 +137,7 @@ impl ConnectionPool {
         } else {
             let guard = self.state.writer.lock().await;
             LeasedConnectionImpl::Writer(LeasedWriter {
-                connection: guard,
+                connection: MaybeUninit::new(guard),
                 pool: self,
             })
         }
@@ -187,14 +183,49 @@ struct PoolReaders {
 }
 
 struct LeasedWriter<'a> {
-    connection: MutexGuard<'a, Connection>,
+    connection: MaybeUninit<MutexGuard<'a, Connection>>,
     pool: &'a ConnectionPool,
+}
+
+impl<'a> LeasedWriter<'a> {
+    /// Safety: Must not be called in [Drop].
+    pub unsafe fn connection(&'a self) -> &'a Connection {
+        unsafe {
+            // Safety: Initialized if we're not in drop, which takes the guard out of the struct.
+            self.connection.assume_init_ref()
+        }
+    }
+
+    pub unsafe fn connection_mut(&mut self) -> &mut Connection {
+        unsafe {
+            // Safety: Initialized if we're not in drop, which takes the guard out of the struct.
+            self.connection.assume_init_mut()
+        }
+    }
 }
 
 impl Drop for LeasedWriter<'_> {
     fn drop(&mut self) {
         // Send update notifications for writes made on this connection while leased.
-        let _ = self.pool.take_update_notifications(&self.connection);
+        let updates = self
+            .pool
+            .take_update_notifications(unsafe {
+                // Safety: We did not clear the connection yet.
+                self.connection()
+            })
+            .unwrap();
+
+        // Now, drop the connection.
+        unsafe { self.connection.assume_init_drop() }
+
+        // And only after the connection has been returned, dispatch the update notification. This
+        // avoids deadlocks when we're polling for connections synchronously in C++.
+        if !updates.tables.is_empty() {
+            self.pool
+                .state
+                .table_notifiers
+                .notify_updates(&updates.tables);
+        }
     }
 }
 
@@ -227,7 +258,7 @@ impl<'a> Deref for LeasedConnectionImpl<'a> {
 
     fn deref(&self) -> &Self::Target {
         match self {
-            LeasedConnectionImpl::Writer(writer) => &writer.connection,
+            LeasedConnectionImpl::Writer(writer) => unsafe { writer.connection() },
             LeasedConnectionImpl::Reader(reader) => unsafe {
                 // safety: This is initialized by default, and only uninitialized on Drop.
                 reader.connection.assume_init_ref()
@@ -237,9 +268,9 @@ impl<'a> Deref for LeasedConnectionImpl<'a> {
 }
 
 impl<'a> DerefMut for LeasedConnectionImpl<'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
+    fn deref_mut<'b>(&'b mut self) -> &'b mut Self::Target {
         match self {
-            LeasedConnectionImpl::Writer(writer) => &mut writer.connection,
+            LeasedConnectionImpl::Writer(writer) => unsafe { writer.connection_mut() },
             LeasedConnectionImpl::Reader(reader) => unsafe {
                 // safety: This is initialized by default, and only uninitialized on Drop.
                 reader.connection.assume_init_mut()

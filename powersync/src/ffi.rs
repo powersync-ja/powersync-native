@@ -2,11 +2,13 @@ use crate::db::crud::CrudTransactionStream;
 use crate::db::internal::InnerPowerSyncState;
 use crate::error::PowerSyncError;
 use crate::sync::coordinator::SyncCoordinator;
+use crate::util::raw_listener::CallbackListenerHandle;
 use crate::{
     BackendConnector, CrudTransaction, LeasedConnection, PowerSyncDatabase, SyncOptions,
     SyncStatusData,
 };
 use futures_lite::Stream;
+use std::collections::HashSet;
 use std::ffi::c_void;
 use std::sync::Arc;
 
@@ -79,9 +81,37 @@ impl RawPowerSyncDatabase {
         Ok(())
     }
 
+    pub async fn disconnect(&self) -> Result<(), PowerSyncError> {
+        let RawPowerSyncReference { sync, inner } = self.as_ref();
+        sync.disconnect().await;
+
+        Ok(())
+    }
+
     pub fn sync_status(&self) -> Arc<SyncStatusData> {
         let RawPowerSyncReference { inner, .. } = self.as_ref();
         inner.status.current_snapshot()
+    }
+
+    pub fn install_status_listener<'a>(
+        &'a self,
+        f: impl Fn() + Send + Sync + 'a,
+    ) -> CallbackListenerHandle<'a, ()> {
+        let RawPowerSyncReference { inner, .. } = self.as_ref();
+        inner.status.listener(f)
+    }
+
+    pub fn install_table_listener<'a>(
+        &'a self,
+        tables: HashSet<String>,
+        f: impl Fn() + Send + Sync + 'a,
+    ) -> CallbackListenerHandle<'a, HashSet<String>> {
+        let RawPowerSyncReference { inner, .. } = self.as_ref();
+        inner
+            .env
+            .pool
+            .update_notifiers()
+            .install_callback(tables, f)
     }
 
     pub fn crud_transactions<'a>(

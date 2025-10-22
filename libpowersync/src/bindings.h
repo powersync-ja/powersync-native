@@ -128,6 +128,8 @@ PowerSyncResultCode powersync_db_in_memory(RawSchema schema, RawPowerSyncDatabas
 PowerSyncResultCode powersync_db_connect(const RawPowerSyncDatabase *db,
                                          const CppConnector *connector);
 
+PowerSyncResultCode powersync_db_disconnect(const RawPowerSyncDatabase *db);
+
 PowerSyncResultCode powersync_db_reader(const RawPowerSyncDatabase *db,
                                         ConnectionLeaseResult *out_lease);
 
@@ -135,6 +137,14 @@ PowerSyncResultCode powersync_db_writer(const RawPowerSyncDatabase *db,
                                         ConnectionLeaseResult *out_lease);
 
 void powersync_db_return_lease(RawConnectionLease *lease);
+
+void *powersync_db_watch_tables(const RawPowerSyncDatabase *db,
+                                const StringView *tables,
+                                uintptr_t table_count,
+                                void (*listener)(const void*),
+                                const void *token);
+
+void powersync_db_watch_tables_end(void *watcher);
 
 void powersync_db_free(RawPowerSyncDatabase db);
 
@@ -148,6 +158,16 @@ void powersync_free_str(const char *str);
 void powersync_run_tasks(const RawPowerSyncDatabase *db);
 
 int powersync_install_logger(CppLogger logger);
+
+void *powersync_db_status(const RawPowerSyncDatabase *db);
+
+void powersync_status_free(const void *status);
+
+void *powersync_db_status_listener(const RawPowerSyncDatabase *db,
+                                   void (*listener)(const void*),
+                                   const void *token);
+
+void powersync_db_status_listener_clear(void *listener);
 
 }  // extern "C"
 
