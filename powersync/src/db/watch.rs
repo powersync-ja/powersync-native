@@ -1,5 +1,4 @@
-use crate::CallbackListenerHandle;
-use crate::util::raw_listener::CallbackListeners;
+use crate::util::raw_listener::{CallbackListenerHandle, CallbackListeners};
 use event_listener::{Event, EventListener};
 use futures_lite::{FutureExt, Stream, ready};
 use std::sync::Weak;

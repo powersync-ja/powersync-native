@@ -1,11 +1,11 @@
+use rusqlite::params;
+use std::ffi::c_void;
 use std::{
     cell::Cell,
     collections::HashMap,
     sync::{Arc, Mutex, Weak},
     time::Duration,
 };
-
-use rusqlite::params;
 
 use crate::{
     PowerSyncDatabase, StreamPriority,
@@ -210,6 +210,7 @@ impl Drop for StreamSubscriptionGroup {
     }
 }
 
+#[derive(Clone)]
 pub struct StreamSubscription {
     group: Arc<StreamSubscriptionGroup>,
 }
@@ -231,6 +232,21 @@ impl StreamSubscription {
 
     pub fn unsubscribe(self) {
         drop(self);
+    }
+
+    #[cfg(feature = "ffi")]
+    pub fn into_raw(self) -> *mut c_void {
+        Arc::into_raw(self.group) as _
+    }
+
+    /// ## Safety
+    ///
+    /// The given pointer must have been obtained from [Self::into:raw], and is only valid once.
+    #[cfg(feature = "ffi")]
+    pub unsafe fn from_raw(ptr: *mut c_void) -> Self {
+        Self {
+            group: unsafe { Arc::from_raw(ptr as _) },
+        }
     }
 }
 

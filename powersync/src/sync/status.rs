@@ -1,6 +1,5 @@
 use event_listener::{Event, EventListener};
 use rusqlite::{Connection, params};
-use std::collections::HashSet;
 use std::{
     fmt::Debug,
     sync::{
@@ -9,6 +8,7 @@ use std::{
     },
 };
 
+use crate::sync::streams::StreamKey;
 use crate::util::raw_listener::{CallbackListenerHandle, CallbackListeners};
 use crate::{
     error::PowerSyncError,
@@ -44,15 +44,18 @@ impl SyncStatus {
     }
 
     pub(crate) fn update<T>(&self, update: impl FnOnce(&mut SyncStatusData) -> T) -> T {
-        // Update status.
-        let mut data = self.data.lock().unwrap();
-        let mut new = data.new_revision();
-        let res = update(&mut new);
+        let res = {
+            // Update status.
+            let mut data = self.data.lock().unwrap();
+            let mut new = data.new_revision();
+            let res = update(&mut new);
 
-        // Notify async listeners.
-        let old_state = std::mem::replace(&mut *data, Arc::new(new));
-        old_state.is_invalidated.store(true, Ordering::SeqCst);
-        old_state.invalidated.notify(usize::MAX);
+            // Notify async listeners.
+            let old_state = std::mem::replace(&mut *data, Arc::new(new));
+            old_state.is_invalidated.store(true, Ordering::SeqCst);
+            old_state.invalidated.notify(usize::MAX);
+            res
+        };
 
         // Notify external C++ listeners.
         self.raw_listeners.notify_all();

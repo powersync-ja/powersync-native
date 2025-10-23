@@ -16,3 +16,4 @@ mod executor;
 mod logger;
 mod schema;
 mod status;
+mod streams;

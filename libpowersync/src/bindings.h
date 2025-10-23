@@ -92,6 +92,33 @@ struct CppLogger {
   void (*native_log)(LogLevel level, const char *line);
 };
 
+struct RawSyncStatus {
+  bool connected;
+  bool connecting;
+  bool downloading;
+  StringView download_error;
+  bool has_download_error;
+  bool uploading;
+  StringView upload_error;
+  bool has_upload_error;
+};
+
+struct RawSyncStreamStatus {
+  StringView name;
+  StringView parameters;
+  bool has_parameters;
+  int64_t progress_total;
+  int64_t progress_done;
+  bool has_progress;
+  bool is_active;
+  bool is_default;
+  bool has_explicit_subscription;
+  int64_t expires_at;
+  bool has_expires_at;
+  bool has_synced;
+  int64_t last_synced_at;
+};
+
 extern "C" {
 
 void powersync_completion_handle_complete_credentials(CppCompletionHandle *handle,
@@ -160,6 +187,16 @@ void powersync_run_tasks(const RawPowerSyncDatabase *db);
 int powersync_install_logger(CppLogger logger);
 
 void *powersync_db_status(const RawPowerSyncDatabase *db);
+
+void powersync_status_inspect(const void *status,
+                              void (*inspect)(void *token, RawSyncStatus status),
+                              void *inspect_token);
+
+void powersync_status_streams(const void *status,
+                              void (*inspect)(void *token, const RawSyncStreamStatus *status),
+                              void *inspect_token);
+
+void powersync_status_clone(const void *status);
 
 void powersync_status_free(const void *status);
 

@@ -4,6 +4,7 @@
 #include <string>
 #include <optional>
 #include <utility>
+#include <chrono>
 #include <thread>
 #include <vector>
 
@@ -209,12 +210,69 @@ class Watcher {
   ~Watcher();
 };
 
+class SyncStream;
+class SyncStreamSubscription;
+
+/// Information about a progressing download.
+///
+/// This reports the `total` amount of operations to download, how many of them have already been
+/// `downloaded`, and finally a `fraction()` indicating relative progress.
+struct ProgressCounters {
+  /// How many operations need to be downloaded in total for the current download to complete.
+  int64_t total;
+  /// How many operations, out of `total`, have already been downloaded.
+  int64_t downloaded;
+
+  /// The relative amount of `total` to items in `downloaded`, as a number between `0.0` and `1.0` (inclusive).
+  ///
+  /// When this number reaches `1.0`, all changes have been received from the sync service. Actually applying these
+  /// changes happens before the progress is cleared though, so progress can stay at `1.0` for a short while before
+  /// completing.
+  float fraction() const {
+    if (total == 0) {
+      return 0;
+    }
+    return static_cast<float>(downloaded) / static_cast<float>(total);
+  }
+};
+
+struct SyncStreamStatus {
+  std::string name;
+  std::optional<std::string> parameters;
+
+  std::optional<ProgressCounters> progress;
+  bool is_active;
+  bool is_default;
+  bool has_explicit_subscription;
+  std::optional<std::chrono::time_point<std::chrono::system_clock>> expires_at;
+  bool has_synced;
+  std::optional<std::chrono::time_point<std::chrono::system_clock>> last_synced_at;
+};
+
 class SyncStatus {
   void* rust_status;
 
-  explicit SyncStatus(void* rust_status): rust_status(rust_status) {}
+  void read();
+
+  explicit SyncStatus(void* rust_status);
   friend class Database;
 public:
+  bool connected;
+  bool connecting;
+  bool downloading;
+  std::optional<std::string> download_error;
+
+  bool uploading;
+  std::optional<std::string> upload_error;
+
+  SyncStatus(const SyncStatus& other);
+  SyncStatus(SyncStatus&& other) = delete;
+
+  std::optional<SyncStreamStatus> for_stream(const SyncStream& stream) const;
+  std::vector<SyncStreamStatus> all_streams() const;
+
+  friend std::ostream& operator<<(std::ostream& os, const SyncStatus& status);
+
   ~SyncStatus();
 };
 
@@ -248,15 +306,34 @@ public:
   SyncStatus sync_status() const;
 
   /// The watcher keeps a reference to the current database, which must outlive it.
-  std::unique_ptr<Watcher> watch_sync_status(std::function<void (SyncStatus)> callback) const;
-  std::unique_ptr<Watcher> watch_tables(const std::initializer_list<std::string>& tables, std::function<void ()> callback) const;
-
-  ~Database();
+  [[nodiscard]] std::unique_ptr<Watcher> watch_sync_status(std::function<void()> callback) const;
+  [[nodiscard]] std::unique_ptr<Watcher> watch_tables(const std::initializer_list<std::string>& tables, std::function<void ()> callback) const;
 
   [[nodiscard]] LeasedConnection reader() const;
   [[nodiscard]] LeasedConnection writer() const;
 
+  ~Database();
+
   static Database in_memory(const Schema& schema);
+};
+
+class SyncStream {
+  const Database& db;
+public:
+  const std::string name;
+  const std::optional<std::string> parameters;
+
+  SyncStream(const Database& db, const std::string& name): db(db), name(name) {}
+  SyncStream(const Database& db, const std::string& name, std::string parameters): db(db), name(name), parameters(parameters) {}
+
+  SyncStreamSubscription subscribe();
+};
+
+class SyncStreamSubscription {
+private:
+  void* rust_subscription;
+public:
+  const SyncStream stream;
 };
 
 class Exception final : public std::exception {

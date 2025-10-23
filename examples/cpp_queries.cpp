@@ -83,6 +83,11 @@ int main() {
         sqlite3_finalize(stmt);
     });
 
+    auto status_watcher = db->watch_sync_status([db]() {
+        const auto status = db->sync_status();
+        std::cout << "Sync status: " << status << std::endl;
+    });
+
     {
         auto writer = db->writer();
         check_rc(sqlite3_exec(writer, "INSERT INTO users (id, name) VALUES (uuid(), 'Simon');", nullptr, nullptr, nullptr));

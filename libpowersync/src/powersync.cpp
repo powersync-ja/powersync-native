@@ -27,12 +27,12 @@ namespace powersync {
         }
     }
 
-    static std::string resolve_string(internal::StringView& source) {
+    static std::string resolve_string(const internal::StringView& source) {
         size_t count = source.length;
         return {source.value, count};
     }
 
-    static std::optional<std::string> resolve_string(internal::StringView& source, bool exists) {
+    static std::optional<std::string> resolve_string(const internal::StringView& source, bool exists) {
         if (!exists) {
             return std::nullopt;
         }
@@ -191,10 +191,10 @@ namespace powersync {
         return SyncStatus(internal::powersync_db_status(&this->raw));
     }
 
-    std::unique_ptr<Watcher> Database::watch_sync_status(std::function<void(SyncStatus)> callback) const {
+    std::unique_ptr<Watcher> Database::watch_sync_status(std::function<void()> callback) const {
         std::unique_ptr<Watcher> watcher;
-        watcher = std::make_unique<Watcher>([callback = std::move(callback), this]() mutable {
-            callback(this->sync_status());
+        watcher = std::make_unique<Watcher>([callback = std::move(callback)]() mutable {
+            callback();
         });
 
         auto handle = internal::powersync_db_status_listener(&this->raw, Watcher::dispatch, watcher.get());
@@ -330,9 +330,110 @@ namespace powersync {
         }
     }
 
-    SyncStatus::~SyncStatus() {
-        if (this->rust_status) {
-            internal::powersync_status_free(this->rust_status);
+    SyncStatus::SyncStatus(void *rust_status): rust_status(rust_status) {
+        this->read();
+    }
+
+    static void sync_status_inspector(void* target, internal::RawSyncStatus info) {
+        auto status = static_cast<SyncStatus*>(target);
+
+        status->connected = info.connected;
+        status->connecting = info.connecting;
+        status->downloading = info.downloading;
+        status->download_error = resolve_string(info.download_error, info.has_download_error);
+        status->uploading = info.uploading;
+        status->upload_error = resolve_string(info.upload_error, info.has_upload_error);
+    }
+
+    void SyncStatus::read() {
+        internal::powersync_status_inspect(rust_status, sync_status_inspector, this);
+    }
+
+    SyncStatus::SyncStatus(const SyncStatus& other): rust_status(other.rust_status) {
+        internal::powersync_status_clone(rust_status);
+        this->read();
+    }
+
+    static void sync_stream_status_inspector(void* target, const internal::RawSyncStreamStatus* info) {
+        using Clock = std::chrono::system_clock;
+        using TimePoint = std::chrono::time_point<Clock>;
+
+        auto streams = static_cast<std::vector<SyncStreamStatus>*>(target);
+
+        std::optional<ProgressCounters> progress;
+        std::optional<TimePoint> expires_at;
+        std::optional<TimePoint> last_synced_at;
+        if (info->has_progress) {
+            progress = {
+                .total = info->progress_total,
+                .downloaded = info->progress_done,
+            };
         }
+        if (info->has_expires_at) {
+            expires_at = TimePoint(std::chrono::milliseconds(info->expires_at));
+        }
+        if (info->has_synced) {
+            last_synced_at = TimePoint(std::chrono::milliseconds(info->last_synced_at));
+        }
+
+        SyncStreamStatus status = {
+            .name = resolve_string(info->name),
+            .parameters = resolve_string(info->parameters, info->has_parameters),
+            .progress = progress,
+            .is_active = info->is_active,
+            .is_default = info->is_default,
+            .has_explicit_subscription = info->has_explicit_subscription,
+            .expires_at = expires_at,
+            .has_synced = info->has_synced,
+            .last_synced_at = last_synced_at,
+        };
+        streams->emplace_back(status);
+    }
+
+    std::vector<SyncStreamStatus> SyncStatus::all_streams() const {
+        std::vector<SyncStreamStatus> streams;
+        internal::powersync_status_streams(rust_status, sync_stream_status_inspector, &streams);
+
+        return streams;
+    }
+
+    std::optional<SyncStreamStatus> SyncStatus::for_stream(const SyncStream& stream) const {
+        // TODO: Don't recompue vector on every call.
+        const auto streams = all_streams();
+        for (const auto& known: streams) {
+            if (known.name == stream.name && known.parameters == stream.parameters) {
+                return known;
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    std::ostream& operator<<(std::ostream& os, const SyncStatus& status) {
+        os << "download status: ";
+        if (status.downloading) {
+            os << "downloading";
+        } else if (status.connected) {
+            os << "connected";
+        } else if (status.connecting) {
+            os << "connecting";
+        } else {
+            os << "idle";
+        }
+        os << ", ";
+        if (status.download_error.has_value()) {
+            os << "download error: " << *status.download_error << ", ";
+        }
+
+        os << "uploading: " << status.uploading;
+
+        if (status.upload_error.has_value()) {
+            os << ", upload error: " << *status.download_error;
+        }
+        return os;
+    }
+
+    SyncStatus::~SyncStatus() {
+        internal::powersync_status_free(this->rust_status);
     }
 }
