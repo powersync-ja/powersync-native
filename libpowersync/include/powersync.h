@@ -286,6 +286,7 @@ class Database {
   Database(const Database&) = delete;
 
   friend class CrudTransaction;
+  friend class SyncStream;
 public:
   Database(Database&& other) noexcept:
     raw(other.raw),
@@ -326,14 +327,22 @@ public:
   SyncStream(const Database& db, const std::string& name): db(db), name(name) {}
   SyncStream(const Database& db, const std::string& name, std::string parameters): db(db), name(name), parameters(parameters) {}
 
-  SyncStreamSubscription subscribe();
+  SyncStreamSubscription subscribe() const;
 };
 
 class SyncStreamSubscription {
 private:
   void* rust_subscription;
+
+  SyncStreamSubscription(SyncStream stream, void* rust_subscription);
+  friend SyncStream;
 public:
+  SyncStreamSubscription(const SyncStreamSubscription&);
+  SyncStreamSubscription(SyncStreamSubscription&&) = delete;
+
   const SyncStream stream;
+
+  ~SyncStreamSubscription();
 };
 
 class Exception final : public std::exception {

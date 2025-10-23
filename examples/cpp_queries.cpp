@@ -93,6 +93,8 @@ int main() {
         check_rc(sqlite3_exec(writer, "INSERT INTO users (id, name) VALUES (uuid(), 'Simon');", nullptr, nullptr, nullptr));
     }
 
+    auto subscription = SyncStream(*db, "users").subscribe();
+
     {
         auto stream = db->get_crud_transactions();
         while (stream.advance()) {

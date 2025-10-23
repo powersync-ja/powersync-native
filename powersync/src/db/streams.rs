@@ -80,6 +80,23 @@ impl<'a> SyncStream<'a> {
         }
     }
 
+    pub(crate) fn with_raw_parameters(
+        db: &'a PowerSyncDatabase,
+        name: &'a str,
+        parameters: Option<&str>,
+    ) -> Result<Self, PowerSyncError> {
+        let parameters: Option<Box<SerializedJsonObject>> = match parameters {
+            None => None,
+            Some(raw) => serde_json::from_str(raw)?,
+        };
+
+        Ok(Self {
+            db,
+            name,
+            parameters,
+        })
+    }
+
     async fn subscription_command<'b>(
         &self,
         cmd: &SubscriptionChangeRequest<'b>,

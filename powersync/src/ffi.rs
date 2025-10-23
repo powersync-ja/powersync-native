@@ -4,8 +4,8 @@ use crate::error::PowerSyncError;
 use crate::sync::coordinator::SyncCoordinator;
 use crate::util::raw_listener::CallbackListenerHandle;
 use crate::{
-    BackendConnector, CrudTransaction, LeasedConnection, PowerSyncDatabase, SyncOptions,
-    SyncStatusData,
+    BackendConnector, CrudTransaction, LeasedConnection, PowerSyncDatabase, StreamSubscription,
+    SyncOptions, SyncStatusData, SyncStream,
 };
 use futures_lite::Stream;
 use std::collections::HashSet;
@@ -131,6 +131,16 @@ impl RawPowerSyncDatabase {
         inner
             .complete_crud_items(last_item_id, write_checkpoint)
             .await
+    }
+
+    pub async fn create_stream_subscription(
+        &self,
+        name: &str,
+        encoded_params: Option<&str>,
+    ) -> Result<StreamSubscription, PowerSyncError> {
+        let db = self.clone_into_db();
+        let stream = SyncStream::with_raw_parameters(&db, name, encoded_params)?;
+        stream.subscribe().await
     }
 
     /// ## Safety

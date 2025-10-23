@@ -206,6 +206,16 @@ void *powersync_db_status_listener(const RawPowerSyncDatabase *db,
 
 void powersync_db_status_listener_clear(void *listener);
 
+PowerSyncResultCode powersync_stream_subscription_create(const RawPowerSyncDatabase *db,
+                                                         StringView name,
+                                                         StringView parameters,
+                                                         bool has_parameters,
+                                                         void **out_db);
+
+void powersync_stream_subscription_clone(void *subscription);
+
+void powersync_stream_subscription_free(void *subscription);
+
 }  // extern "C"
 
 }  // namespace powersync::internal

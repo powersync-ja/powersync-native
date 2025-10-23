@@ -436,4 +436,42 @@ namespace powersync {
     SyncStatus::~SyncStatus() {
         internal::powersync_status_free(this->rust_status);
     }
+
+    SyncStreamSubscription SyncStream::subscribe() const {
+        void* rust_subscription = nullptr;
+        internal::StringView parameters = {nullptr, 0};
+        if (this->parameters.has_value()) {
+            parameters.value = this->parameters->data();
+            parameters.length = static_cast<intptr_t>(this->parameters->size());
+        }
+
+        internal::powersync_stream_subscription_create(
+            &this->db.raw,
+            {
+                .value = this->name.data(),
+                .length = static_cast<intptr_t>(this->name.size()),
+            },
+            parameters,
+            this->parameters.has_value(),
+            &rust_subscription
+            );
+
+        return SyncStreamSubscription(*this, rust_subscription);
+    }
+
+    SyncStreamSubscription::SyncStreamSubscription(SyncStream stream, void *rust_subscription)
+        : rust_subscription(rust_subscription),
+            stream(std::move(stream)) {}
+
+
+    SyncStreamSubscription::SyncStreamSubscription(const SyncStreamSubscription& other)
+        :rust_subscription(other.rust_subscription), stream(other.stream)
+    {
+        internal::powersync_stream_subscription_clone(rust_subscription);
+    }
+
+    SyncStreamSubscription::~SyncStreamSubscription() {
+        internal::powersync_stream_subscription_free(rust_subscription);
+    }
+
 }
