@@ -40,6 +40,10 @@ namespace powersync {
         return resolve_string(source);
     }
 
+    internal::RawCompletionHandle::RawCompletionHandle(RawCompletionHandle &&other) noexcept: rust_handle(other.rust_handle) {
+        other.rust_handle = nullptr;
+    }
+
     void internal::RawCompletionHandle::send_credentials(const char* endpoint, const char* token) {
         powersync_completion_handle_complete_credentials(&this->rust_handle, endpoint, token);
     }
@@ -57,7 +61,9 @@ namespace powersync {
     }
 
     internal::RawCompletionHandle::~RawCompletionHandle() {
-        powersync_completion_handle_free(&this->rust_handle);
+        if (this->rust_handle) {
+            powersync_completion_handle_free(&this->rust_handle);
+        }
     }
 
 
@@ -156,20 +162,16 @@ namespace powersync {
 
             static void upload_data_impl(CppConnector* connector, internal::CppCompletionHandle handle) {
                 auto raw = static_cast<RawConnector*>(connector);
-                CompletionHandle<std::monostate> wrapped(internal::RawCompletionHandle {
-                    .rust_handle = handle
-                });
+                internal::RawCompletionHandle raw_handle(handle);
 
-                raw->connector->upload_data(wrapped);
+                CompletionHandle<std::monostate> wrapped(handle);
+                raw->connector->upload_data(std::move(wrapped));
             }
 
             static void fetch_credentials_impl(CppConnector* connector, internal::CppCompletionHandle handle) {
                 auto raw = static_cast<RawConnector*>(connector);
-                CompletionHandle<PowerSyncCredentials> wrapped(internal::RawCompletionHandle {
-                                    .rust_handle = handle
-                                });
-
-                raw->connector->fetch_token(wrapped);
+                CompletionHandle<PowerSyncCredentials> wrapped(handle);
+                raw->connector->fetch_token(std::move(wrapped));
             }
 
             static void drop_impl(CppConnector* connector) {

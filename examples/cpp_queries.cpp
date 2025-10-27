@@ -11,7 +11,6 @@ void check_rc(int rc) {
 }
 
 class DemoConnector: public powersync::BackendConnector {
-private:
     std::shared_ptr<powersync::Database> database;
 
     static size_t write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
@@ -38,7 +37,7 @@ public:
                 return;
             }
             curl_easy_cleanup(curl);
-            json parsed_response = response;
+            json parsed_response = json::parse(response);
 
             std::string token = parsed_response["token"];
             completion.complete_ok(powersync::PowerSyncCredentials {
@@ -49,7 +48,26 @@ public:
     }
 
     void upload_data(powersync::CompletionHandle<std::monostate> completion) override {
-        completion.complete_ok(std::monostate());
+        const auto db = this->database;
+        std::thread([db, completion = std::move(completion)]() mutable {
+            std::cout << "Starting crud uploads" << std::endl;
+
+            auto transactions = db->get_crud_transactions();
+            while (transactions.advance()) {
+                auto tx = transactions.current();
+                std::cout << "Has transaction, id " << *tx.id << std::endl;
+                for (const auto& item : tx.crud) {
+                    std::cout << "Has item: " << item.table << ": " << item.id << std::endl;
+                }
+
+                // TODO: Upload items to backend
+
+                tx.complete();
+            }
+
+            std::cout << "Done with transactions iteration"  << std::endl;
+            completion.complete_ok(std::monostate());
+        }).detach();
     }
 
     ~DemoConnector() override = default;
@@ -62,20 +80,42 @@ int main() {
     });
 
     Schema schema{};
-    schema.tables.emplace_back(Table{"users", {
-        Column::text("name")
+    schema.tables.emplace_back(Table{"todos", {
+        Column::text("description"),
+        Column::integer("completed"),
+        Column::text("list_id"),
+    }});
+    schema.tables.emplace_back(Table{"lists", {
+        Column::text("name"),
     }});
 
     auto db = std::make_shared<Database>(std::move(Database::in_memory(schema)));
     db->spawn_sync_thread();
-    //auto connector = std::make_shared<DemoConnector>(db);
-    //db->connect(connector);
 
-    auto watcher = db->watch_tables({"users"}, [db] {
-        std::cout << "Saw change on users table" << std::endl;
+    auto subscription = SyncStream(*db, "lists").subscribe();
+
+    auto status_watcher = db->watch_sync_status([db, subscription]() {
+        const auto status = db->sync_status();
+        std::cout << "Sync status: " << status << std::endl;
+
+        const auto stream_status = status.for_stream(subscription.stream);
+        if (stream_status.has_value()) {
+            const auto progress = stream_status->progress;;
+            std::cout << "Download progress: Has synced: " << stream_status->has_synced;
+            if (progress.has_value()) {
+                std::cout << ", progress: " << progress->downloaded << " / " << progress->total << std::endl;
+            }
+        }
+    });
+
+    auto connector = std::make_shared<DemoConnector>(db);
+    db->connect(connector);
+
+    auto watcher = db->watch_tables({"lists"}, [db] {
+        std::cout << "Saw change on lists table" << std::endl;
         auto reader = db->reader();
         sqlite3_stmt *stmt = nullptr;
-        check_rc(sqlite3_prepare_v2(reader, "SELECT id, name FROM users", -1, &stmt, nullptr));
+        check_rc(sqlite3_prepare_v2(reader, "SELECT id, name FROM lists", -1, &stmt, nullptr));
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             std::cout << sqlite3_column_text(stmt, 0) << ": " << sqlite3_column_text(stmt, 1) << std::endl;
@@ -83,38 +123,12 @@ int main() {
         sqlite3_finalize(stmt);
     });
 
-    auto status_watcher = db->watch_sync_status([db]() {
-        const auto status = db->sync_status();
-        std::cout << "Sync status: " << status << std::endl;
-    });
-
-    {
-        auto writer = db->writer();
-        check_rc(sqlite3_exec(writer, "INSERT INTO users (id, name) VALUES (uuid(), 'Simon');", nullptr, nullptr, nullptr));
+    for (std::string line; std::getline(std::cin, line);) {
+        // TODO: Handle adding lists
     }
 
-    auto subscription = SyncStream(*db, "users").subscribe();
-
-    {
-        auto stream = db->get_crud_transactions();
-        while (stream.advance()) {
-            auto tx = stream.current();
-            std::cout << "Has transaction, id " << *tx.id << std::endl;
-            for (const auto& item : tx.crud) {
-                std::cout << "Has item: " << item.table << ": " << item.id << std::endl;
-            }
-
-            tx.complete();
-        }
-
-        std::cout << "Done with first transactions iteration"  << std::endl;
-    }
-
-    // Should have no further transactions now, we've completed them.
-    {
-        auto stream = db->get_crud_transactions();
-        auto has_tx = stream.advance();
-
-        std::cout << "Has transaction: " << has_tx << std::endl;
-    }
+    //{
+    //    auto writer = db->writer();
+    //    check_rc(sqlite3_exec(writer, "INSERT INTO users (id, name) VALUES (uuid(), 'Simon');", nullptr, nullptr, nullptr));
+    //}
 }

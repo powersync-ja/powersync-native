@@ -18,5 +18,6 @@ fn main() {
         .file("src/powersync.cpp")
         .link_lib_modifier("+whole-archive")
         .compile("powersync_bridge");
+    println!("cargo::rerun-if-changed=include/powersync.h");
     println!("cargo::rerun-if-changed=src/powersync.cpp");
 }

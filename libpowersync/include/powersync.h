@@ -9,14 +9,23 @@
 #include <vector>
 
 namespace powersync {
+  /// Internal definitions used in PowerSync classes. These are not supposed to be used directly.
   namespace internal {
     struct RawPowerSyncDatabase {
       void* sync;
       void* inner;
     };
 
+    /// A completion handle received from Rust.
+    ///
+    /// Completion handles are used to bridge asynchronous Rust and C++. Each handle is conceptually an oneshot channel
+    /// in Rust. Sending a message here or dropping the handle sends a message to an asynchronous Rust function.
     struct RawCompletionHandle {
       void* rust_handle;
+
+      RawCompletionHandle(void* handle) : rust_handle(handle) {}
+      RawCompletionHandle(const RawCompletionHandle& other) = delete;
+      RawCompletionHandle(RawCompletionHandle&& other) noexcept;
 
       void send_empty();
       void send_credentials(const char* endpoint, const char* token);
@@ -27,33 +36,66 @@ namespace powersync {
     };
   }
 
+  /// Type of a local write.
   enum class UpdateType {
+    /// Insert or replace a row. All non-null columns are included in CrudEntry#data.
     PUT = 1,
+    /// Update a row if it exists. All updated columns are included in CrudEntry#data.
     PATCH = 2,
+    /// Delete a row if it exists.
     DELETE = 3,
   };
 
+  /// A single client-side change.
   struct CrudEntry {
+    /// Auto-incrementing client-side id.
+    ///
+    /// Reset whenever the database is re-created.
     int64_t client_id;
+    /// Auto-incrementing transaction id. This is the same for all operations within the same transaction.
     int64_t transaction_id;
+    /// Type of change.
     UpdateType update_type;
+    /// Table that contained the change.
     std::string table;
+    /// ID of the changed row.
     std::string id;
+    /// An optional metadata string attached to this entry at the time the write has been issued.
+    ///
+    /// For tables where Table#track_metadata is enabled, a hidden `_metadata` column is added to this table that can be
+    /// used during updates to attach a hint to the update that is preserved here.
     std::optional<std::string> metadata;
+    /// Data associated with the change, rendered as a serialized JSON object.
+    ///
+    /// - For PUT, this contains all non-null columns of the row.
+    /// - For PATCH, this contains the columns that changed.
+    /// - For DELETE, this is a `std::nullopt`.
     std::optional<std::string> data;
+    /// Old values before an update.
+    ///
+    /// This si only tracked for tables for which this has been enabled by setting Table#track_previous_values.
     std::optional<std::string> previous_values;
   };
 
   class Database;
 
+  /// A transaction containing all local writes made in a SQLite transaction.
   class CrudTransaction {
   public:
+    /// The database on which this transaction has been recorded.
     const Database& db;
+    /// The CrudEntry#client_id of the last write made as part of the transaction.
     int64_t last_item_id;
+    /// The id of the transaction.
     std::optional<int64_t> id;
+    /// All CRUD entries that have been recorded in this transaction.
     std::vector<CrudEntry> crud;
 
+    /// Marks the transaction as completed. This should be called after uploading the writes to your server.
     void complete() const;
+    /// Marks the transaction as completed with a custom write checkpoint.
+    ///
+    /// For details, see [custom write checkpoints](https://docs.powersync.com/usage/use-case-examples/custom-write-checkpoints).
     void complete(std::optional<int64_t> custom_write_checkpoint) const;
   };
 
@@ -65,16 +107,26 @@ namespace powersync {
     Trace = 4,
   };
 
+  /// Installs a logger (via a static callback function) that PowerSync will use to emit internal log lines.
+  ///
+  /// Additionally, the LogLevel parameter can be used to control the minimum severity for which PowerSync will emit
+  /// log items.
+  ///
+  /// This function may only be called once.
   void set_logger(LogLevel level, void(*logger)(LogLevel, const char*));
 
+  /// The column types supported by PowerSync.
   enum ColumnType {
     TEXT,
     INTEGER,
     REAL
 };
 
+  /// A column as part of a \ref Table managed by PowerSync.
   struct Column {
+    /// The name of the column in SQL.
     std::string name;
+    /// The supported column type.
     ColumnType type;
 
     static Column text(std::string name) {
@@ -88,8 +140,13 @@ namespace powersync {
     }
   };
 
+  /// A table as part of the \ref Schema managed by PowerSync.
   struct Table {
+    /// The name of the table in SQL.
     std::string name;
+    /// All data columns that are part of the table.
+    ///
+    /// With PowerSync, each table also has an implicit `id TEXT NOT NULL` column
     std::vector<Column> columns;
     //std::vector<Index> indices = {};
     bool local_only = false;
@@ -123,25 +180,28 @@ public:
 template <typename T>
 struct CompletionHandle {
 private:
-  internal::RawCompletionHandle handle;
+  // Always present unless the handle has been moved out.
+  std::optional<internal::RawCompletionHandle> handle;
 
 public:
   explicit CompletionHandle(internal::RawCompletionHandle handle): handle(std::move(handle)) {}
+  CompletionHandle(const CompletionHandle&) = delete;
+  CompletionHandle(CompletionHandle&& other) noexcept : handle(std::move(other.handle)) {}
 
   void complete_ok(T result);
 
   void complete_error(int code) {
-    this->handle.send_error_code(code);
+    this->handle->send_error_code(code);
   }
 
   void complete_error(int code, const std::string& description) {
-    this->handle.send_error_message(code, description.c_str());
+    this->handle->send_error_message(code, description.c_str());
   }
 };
 
 template<>
 inline void CompletionHandle<std::monostate>::complete_ok(std::monostate _result) {
-  this->handle.send_empty();
+  this->handle->send_empty();
 }
 
 struct PowerSyncCredentials {
@@ -151,7 +211,7 @@ struct PowerSyncCredentials {
 
 template<>
 inline void CompletionHandle<PowerSyncCredentials>::complete_ok(PowerSyncCredentials credentials) {
-  this->handle.send_credentials(credentials.endpoint.c_str(), credentials.token.c_str());
+  this->handle->send_credentials(credentials.endpoint.c_str(), credentials.token.c_str());
 }
 
 /// Note that methods on this class may be called from multiple threads, or concurrently. Backend connectors must thus
