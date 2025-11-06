@@ -1,8 +1,9 @@
 use std::{pin::Pin, sync::Arc, time::Duration};
 
 use http_client::HttpClient;
+use powersync_core::powersync_init_static;
 
-use crate::{db::core_extension::powersync_init_static, error::PowerSyncError};
+use crate::error::PowerSyncError;
 
 use super::db::pool::ConnectionPool;
 
@@ -38,7 +39,7 @@ impl PowerSyncEnvironment {
     /// This needs to be invoked before using the PowerSync SDK. It can safely be called multiple
     /// times.
     pub fn powersync_auto_extension() -> Result<(), PowerSyncError> {
-        let rc = unsafe { powersync_init_static() };
+        let rc = powersync_init_static();
         match rc {
             0 => Ok(()),
             _ => Err(rusqlite::Error::SqliteFailure(

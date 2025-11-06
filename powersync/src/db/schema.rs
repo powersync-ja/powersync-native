@@ -377,7 +377,7 @@ mod test {
 
     #[test]
     fn invalid_table_name() {
-        let mut table = Table::create("#invalid-table", vec![], |tbl| {});
+        let mut table = Table::create("#invalid-table", vec![], |_| {});
         assert!(table.validate().is_err());
 
         table.name = "valid".into();

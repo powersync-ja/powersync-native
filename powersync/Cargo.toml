@@ -32,6 +32,7 @@ thiserror = "2.0.16"
 tokio = { version = "1", features = ["time", "rt"], optional = true }
 url = "2.5.7"
 serde_with = "3.15.0"
+powersync_core = { version = "0.4.9", features = ["static"] }
 
 [dev-dependencies]
 async-executor = "1.13.3"
@@ -39,8 +40,3 @@ async-task = "4.7.1"
 futures-lite = "2.6.1"
 futures-test = "0.3.31"
 powersync_test_utils = { path = "../powersync_test_utils" }
-
-[build-dependencies]
-sha2 = "0.10.9"
-reqwest = { version = "0.12.24", default-features = false, features = ["default-tls", "blocking"] }
-hex-literal = "1.0.0"
