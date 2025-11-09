@@ -88,7 +88,7 @@ public:
                 std::string response;
                 const auto headers = curl_slist_append(nullptr, "Content-Type: application/json");
 
-                auto request_body = json::object({"batch", entries});
+                auto request_body = json::object({{"batch", entries}});
                 auto serialized_body = request_body.dump();
 
                 curl_easy_setopt(curl, CURLOPT_URL, "http://localhost:6060/api/data");
@@ -107,6 +107,7 @@ public:
                 curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
                 if (code != 200) {
                     completion.complete_error(static_cast<int>(code), "Unexpected response code, body was: " + response);
+                    return;
                 }
 
                 curl_easy_cleanup(curl);
@@ -136,6 +137,7 @@ int main() {
     }});
     schema.tables.emplace_back(Table{"lists", {
         Column::text("name"),
+        Column::text("owner_id"),
     }});
 
     auto db = std::make_shared<Database>(std::move(Database::in_memory(schema)));
@@ -152,8 +154,9 @@ int main() {
             const auto progress = stream_status->progress;;
             std::cout << "Download progress: Has synced: " << stream_status->has_synced;
             if (progress.has_value()) {
-                std::cout << ", progress: " << progress->downloaded << " / " << progress->total << std::endl;
+                std::cout << ", progress: " << progress->downloaded << " / " << progress->total;
             }
+            std::cout << std::endl;
         }
     });
 
@@ -177,7 +180,7 @@ int main() {
         auto writer = db->writer();
         sqlite3_stmt *stmt;
 
-        check_rc(sqlite3_prepare_v3(writer, "INSERT INTO lists (id, name) VALUES (uuid(), ?)", -1, 0, &stmt, nullptr));
+        check_rc(sqlite3_prepare_v3(writer, "INSERT INTO lists (id, owner_id, name) VALUES (uuid(), uuid(), ?)", -1, 0, &stmt, nullptr));
         check_rc(sqlite3_bind_text(stmt, 1, line.c_str(), static_cast<int>(line.length()), SQLITE_TRANSIENT));
 
         const auto rc = sqlite3_step(stmt);

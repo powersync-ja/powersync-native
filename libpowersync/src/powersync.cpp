@@ -66,7 +66,6 @@ namespace powersync {
         }
     }
 
-
     const char * Exception::what() const noexcept {
         if (this->msg) {
             return this->msg;
@@ -162,7 +161,6 @@ namespace powersync {
 
             static void upload_data_impl(CppConnector* connector, internal::CppCompletionHandle handle) {
                 auto raw = static_cast<RawConnector*>(connector);
-                internal::RawCompletionHandle raw_handle(handle);
 
                 CompletionHandle<std::monostate> wrapped(handle);
                 raw->connector->upload_data(std::move(wrapped));
