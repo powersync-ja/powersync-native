@@ -1,13 +1,8 @@
-use std::{ffi::c_int, fmt::Display, str::FromStr};
+use std::{fmt::Display, str::FromStr};
 
 use rusqlite::{Connection, params};
 
 use crate::error::{PowerSyncError, RawPowerSyncError};
-
-#[link(name = "powersync_core", kind = "static")]
-unsafe extern "C" {
-    pub unsafe fn powersync_init_static() -> c_int;
-}
 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub struct CoreExtensionVersion {

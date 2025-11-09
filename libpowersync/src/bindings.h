@@ -6,6 +6,11 @@
 
 namespace powersync::internal {
 
+enum class PowerSyncResultCode {
+  OK = 0,
+  ERROR = 1,
+};
+
 enum class ColumnType {
   Text = 0,
   Integer = 1,
@@ -18,11 +23,6 @@ enum class LogLevel {
   Info = 2,
   Debug = 3,
   Trace = 4,
-};
-
-enum class PowerSyncResultCode {
-  OK = 0,
-  ERROR = 1,
 };
 
 struct RawConnectionLease;
