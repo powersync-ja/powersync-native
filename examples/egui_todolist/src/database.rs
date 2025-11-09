@@ -40,7 +40,7 @@ impl TodoEntry {
     }
 
     pub fn fetch_in_list(conn: &Connection, list_id: &str) -> Result<Vec<Self>, PowerSyncError> {
-        let mut stmt = conn.prepare("SELECT * FROM todos WHERE list_id = ?")?;
+        let mut stmt = conn.prepare("SELECT * FROM todos WHERE list_id = ? ORDER BY id")?;
         let mut rows = stmt.query(params![list_id])?;
         let mut results = vec![];
 
@@ -68,7 +68,7 @@ impl TodoList {
     }
 
     pub fn fetch_all(conn: &Connection) -> Result<Vec<Self>, PowerSyncError> {
-        let mut stmt = conn.prepare("SELECT * FROM lists")?;
+        let mut stmt = conn.prepare("SELECT * FROM lists ORDER BY id")?;
         let mut rows = stmt.query(params![])?;
         let mut results = vec![];
 

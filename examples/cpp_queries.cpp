@@ -54,14 +54,63 @@ public:
 
             auto transactions = db->get_crud_transactions();
             while (transactions.advance()) {
+                using json = nlohmann::json;
+
                 auto tx = transactions.current();
+                json entries = json::array({});
+
                 std::cout << "Has transaction, id " << *tx.id << std::endl;
                 for (const auto& item : tx.crud) {
                     std::cout << "Has item: " << item.table << ": " << item.id << std::endl;
+
+                    json entry;
+                    switch (item.update_type) {
+                        case powersync::UpdateType::PUT:
+                            entry["op"] = "PUT";
+                            break;
+                        case powersync::UpdateType::PATCH:
+                            entry["op"] = "PATCH";
+                            break;
+                        case powersync::UpdateType::DELETE:
+                            entry["op"] = "DELETE";
+                            break;
+                    }
+
+                    entry["table"] = item.table;
+                    entry["id"] = item.id;
+                    if (item.data.has_value()) {
+                        entry["data"] = json::parse(item.data.value());
+                    }
+                    entries.push_back(entry);
                 }
 
-                // TODO: Upload items to backend
+                const auto curl = curl_easy_init();
+                std::string response;
+                const auto headers = curl_slist_append(nullptr, "Content-Type: application/json");
 
+                auto request_body = json::object({"batch", entries});
+                auto serialized_body = request_body.dump();
+
+                curl_easy_setopt(curl, CURLOPT_URL, "http://localhost:6060/api/data");
+                curl_easy_setopt(curl, CURLOPT_POST, 1);
+                curl_easy_setopt(curl, CURLOPT_POSTFIELDS, serialized_body.c_str());
+                curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+                curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+                if (auto res = curl_easy_perform(curl); res != CURLE_OK) {
+                    completion.complete_error(res, "CURL request failed");
+                    return;
+                }
+
+                long code;
+                curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+                if (code != 200) {
+                    completion.complete_error(static_cast<int>(code), "Unexpected response code, body was: " + response);
+                }
+
+                curl_easy_cleanup(curl);
+                curl_slist_free_all(headers);
                 tx.complete();
             }
 
@@ -125,10 +174,15 @@ int main() {
 
     for (std::string line; std::getline(std::cin, line);) {
         // TODO: Handle adding lists
-    }
+        auto writer = db->writer();
+        sqlite3_stmt *stmt;
 
-    //{
-    //    auto writer = db->writer();
-    //    check_rc(sqlite3_exec(writer, "INSERT INTO users (id, name) VALUES (uuid(), 'Simon');", nullptr, nullptr, nullptr));
-    //}
+        check_rc(sqlite3_prepare_v3(writer, "INSERT INTO lists (id, name) VALUES (uuid(), ?)", -1, 0, &stmt, nullptr));
+        check_rc(sqlite3_bind_text(stmt, 1, line.c_str(), static_cast<int>(line.length()), SQLITE_TRANSIENT));
+
+        const auto rc = sqlite3_step(stmt);
+        if (rc != SQLITE_DONE) {
+            throw std::runtime_error("SQLite error: " + std::string(sqlite3_errstr(rc)));
+        }
+    }
 }
