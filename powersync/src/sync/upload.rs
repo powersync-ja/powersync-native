@@ -312,7 +312,7 @@ impl<'a> CrudUpload<'a> {
     }
 
     fn ps_crud_sequence(conn: &Connection) -> Result<Option<i64>, PowerSyncError> {
-        let mut seq_before = conn.prepare("SELECT seq FROM sqlite_sequence WHERE name = ?")?;
+        let mut seq_before = conn.prepare("SELECT seq FROM main.sqlite_sequence WHERE name = ?")?;
         let mut seq_before = seq_before.query(params!["ps_crud"])?;
         let Some(row) = seq_before.next()? else {
             return Ok(None);
