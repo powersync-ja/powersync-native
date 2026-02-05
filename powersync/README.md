@@ -6,6 +6,11 @@ _[PowerSync](https://www.powersync.com) is a sync engine for building local-firs
 
 # PowerSync Rust
 
+> [!CAUTION]
+> The PowerSync Rust SDK is currently experimental and in a pre-alpha state.
+> We offer no stability guarantees for this SDK, and can't guarantee continued support for it.
+> If you're interested in using this, please [reach out](https://www.powersync.com/contact)!
+
 ## Setup
 
 PowerSync is implemented over local SQLite databases. The main entrypoint for this library, `PowerSyncDatabase`,

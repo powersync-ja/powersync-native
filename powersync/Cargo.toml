@@ -9,6 +9,7 @@ keywords = ["sqlite", "powersync"]
 homepage = "https://powersync.com"
 repository.workspace = true
 readme = "README.md"
+description = "Experimental PowerSync SDK for Rust applications."
 
 [lib]
 crate-type = ["lib"]
