@@ -1,3 +1,8 @@
 [workspace]
 resolver = "3"
-members = [ "examples/egui_todolist","powersync", "powersync_test_utils"]
+members = [
+    "examples/egui_todolist",
+    "powersync",
+    "libpowersync",
+    "powersync_test_utils"
+]

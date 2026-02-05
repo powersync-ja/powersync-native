@@ -1,18 +1,18 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use crate::db::internal::InnerPowerSyncState;
+use crate::error::{PowerSyncError, RawPowerSyncError};
+use crate::util::SerializedJsonObject;
 use futures_lite::{FutureExt, Stream, ready};
 use pin_project_lite::pin_project;
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
-
-use crate::PowerSyncDatabase;
-use crate::error::{PowerSyncError, RawPowerSyncError};
 
 /// All local writes that were made in a single SQLite transaction.
 pub struct CrudTransaction<'a> {
-    pub(crate) db: &'a PowerSyncDatabase,
+    pub(crate) db: &'a InnerPowerSyncState,
     pub last_item_id: i64,
     /// Unique transaction id.
     ///
@@ -36,7 +36,6 @@ impl<'a> CrudTransaction<'a> {
 
     async fn complete_internal(self, checkpoint: Option<i64>) -> Result<(), PowerSyncError> {
         self.db
-            .inner
             .complete_crud_items(self.last_item_id, checkpoint)
             .await
     }
@@ -72,24 +71,45 @@ pub struct CrudEntry {
     ///
     /// For DELETE, this is null.
     pub data: Option<Map<String, Value>>,
+    pub raw_data: Option<String>,
     /// Old values before an update.
     ///
     /// This is only tracked for tables for which this has been enabled by setting
     /// the [Table::track_previous_values].
     pub previous_values: Option<Map<String, Value>>,
+    pub raw_previous_values: Option<String>,
 }
 
 impl CrudEntry {
     fn parse(id: i64, tx_id: i64, data: &str) -> Result<Self, PowerSyncError> {
+        struct OptionalObject {
+            raw: Option<String>,
+            object: Option<Map<String, Value>>,
+        }
+
+        impl<'de> Deserialize<'de> for OptionalObject {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let raw: Option<&'de SerializedJsonObject> = Option::deserialize(deserializer)?;
+
+                Ok(Self {
+                    raw: raw.map(|e| e.get().to_owned()),
+                    object: raw.map(|e| e.get_value()),
+                })
+            }
+        }
+
         #[derive(Deserialize)]
         struct CrudData {
             op: UpdateType,
             #[serde(rename = "type")]
             table: String,
             id: String,
-            data: Option<Map<String, Value>>,
+            data: OptionalObject,
             metadata: Option<String>,
-            old: Option<Map<String, Value>>,
+            old: OptionalObject,
         }
 
         let data: CrudData = serde_json::from_str(data)?;
@@ -101,8 +121,10 @@ impl CrudEntry {
             table: data.table,
             id: data.id,
             metadata: data.metadata,
-            data: data.data,
-            previous_values: data.old,
+            data: data.data.object,
+            raw_data: data.data.raw,
+            previous_values: data.old.object,
+            raw_previous_values: data.old.raw,
         })
     }
 }
@@ -126,14 +148,14 @@ type Boxed<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pin_project! {
     /// A [Stream] of completed transactions on a database.
     pub(crate) struct CrudTransactionStream<'a> {
-        db: &'a PowerSyncDatabase,
+        db: &'a InnerPowerSyncState,
         last_item_id: Option<i64>,
         next_tx: Option<Boxed<'a, Result<Option<(i64, CrudTransaction<'a>)>, PowerSyncError>>>
     }
 }
 
 impl<'a> CrudTransactionStream<'a> {
-    pub fn new(db: &'a PowerSyncDatabase) -> Self {
+    pub fn new(db: &'a InnerPowerSyncState) -> Self {
         Self {
             db,
             last_item_id: None,
@@ -142,7 +164,7 @@ impl<'a> CrudTransactionStream<'a> {
     }
 
     async fn next_transaction(
-        db: &'a PowerSyncDatabase,
+        db: &'a InnerPowerSyncState,
         last: Option<i64>,
     ) -> Result<Option<(i64, CrudTransaction<'a>)>, PowerSyncError> {
         let last = last.unwrap_or(-1);

@@ -1,11 +1,11 @@
+use rusqlite::params;
+use std::ffi::c_void;
 use std::{
     cell::Cell,
     collections::HashMap,
     sync::{Arc, Mutex, Weak},
     time::Duration,
 };
-
-use rusqlite::params;
 
 use crate::{
     PowerSyncDatabase, StreamPriority,
@@ -78,6 +78,23 @@ impl<'a> SyncStream<'a> {
             name,
             parameters: parameters.map(SerializedJsonObject::from_value),
         }
+    }
+
+    pub(crate) fn with_raw_parameters(
+        db: &'a PowerSyncDatabase,
+        name: &'a str,
+        parameters: Option<&str>,
+    ) -> Result<Self, PowerSyncError> {
+        let parameters: Option<Box<SerializedJsonObject>> = match parameters {
+            None => None,
+            Some(raw) => serde_json::from_str(raw)?,
+        };
+
+        Ok(Self {
+            db,
+            name,
+            parameters,
+        })
     }
 
     async fn subscription_command<'b>(
@@ -210,6 +227,7 @@ impl Drop for StreamSubscriptionGroup {
     }
 }
 
+#[derive(Clone)]
 pub struct StreamSubscription {
     group: Arc<StreamSubscriptionGroup>,
 }
@@ -231,6 +249,21 @@ impl StreamSubscription {
 
     pub fn unsubscribe(self) {
         drop(self);
+    }
+
+    #[cfg(feature = "ffi")]
+    pub fn into_raw(self) -> *mut c_void {
+        Arc::into_raw(self.group) as _
+    }
+
+    /// ## Safety
+    ///
+    /// The given pointer must have been obtained from [Self::into:raw], and is only valid once.
+    #[cfg(feature = "ffi")]
+    pub unsafe fn from_raw(ptr: *mut c_void) -> Self {
+        Self {
+            group: unsafe { Arc::from_raw(ptr as _) },
+        }
     }
 }
 

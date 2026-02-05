@@ -1,0 +1,21 @@
+[package]
+name = "libpowersync"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+name = "powersync_c"
+
+[dependencies]
+powersync = { path = "../powersync", features = ["smol", "ffi"] }
+http-client = { version = "6.5.3", features = ["curl_client"], default-features = false }
+rusqlite = { version = "0.37.0", features = ["load_extension", "bundled"] }
+async-executor = "1.13.3"
+futures-lite = "2.6.1"
+log = { version = "0.4.28", features = ["std"] }
+async-oneshot = "0.5.9"
+
+[build-dependencies]
+cbindgen = "0.29.0"
+cc = "1.2.41"

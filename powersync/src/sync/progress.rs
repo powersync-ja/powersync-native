@@ -6,7 +6,7 @@ use serde::Deserialize;
 /// been [Self::downloaded] and finally a [Self::fraction] indicating relative progress.
 #[derive(Deserialize, Debug, Clone)]
 pub struct ProgressCounters {
-    /// How many operations need to be downloaded in total for the current donwload to complete.
+    /// How many operations need to be downloaded in total for the current download to complete.
     pub total: i64,
     /// How many operations, out of [Self::total], have already been downloaded.
     pub downloaded: i64,
