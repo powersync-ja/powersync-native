@@ -129,9 +129,9 @@ enum SharedFutureEnum {
 
 #[cfg(test)]
 mod test {
-    use std::{cell::RefCell, pin::pin, sync::atomic::AtomicBool, task::Poll};
+    use std::{cell::RefCell, pin::pin, task::Poll};
 
-    use futures_lite::{FutureExt, future};
+    use futures_lite::future;
     use futures_test::task::noop_context;
 
     use crate::util::SharedFuture;

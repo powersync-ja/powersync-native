@@ -7,7 +7,7 @@ use powersync::{
 use powersync_test_utils::{
     DatabaseTest,
     mock_sync_service::TestConnector,
-    sync_line::{BucketChecksum, Checkpoint, StreamDescription, SyncLine},
+    sync_line::{Checkpoint, SyncLine},
 };
 use serde_json::json;
 
