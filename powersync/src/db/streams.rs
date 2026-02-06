@@ -1,12 +1,3 @@
-use std::{
-    cell::Cell,
-    collections::HashMap,
-    sync::{Arc, Mutex, Weak},
-    time::Duration,
-};
-
-use rusqlite::params;
-
 use crate::{
     PowerSyncDatabase, StreamPriority,
     db::internal::InnerPowerSyncState,
@@ -16,6 +7,13 @@ use crate::{
         SubscriptionChangeRequest,
     },
     util::SerializedJsonObject,
+};
+use rusqlite::params;
+use std::{
+    cell::Cell,
+    collections::HashMap,
+    sync::{Arc, Mutex, Weak},
+    time::Duration,
 };
 
 /// Tracks all sync streams that currently have at least one active [StreamSubscription].

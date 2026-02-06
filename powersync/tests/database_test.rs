@@ -5,7 +5,7 @@ use futures_lite::{StreamExt, future};
 use powersync::error::PowerSyncError;
 use powersync_test_utils::{DatabaseTest, UserRow, execute, query_all};
 use rusqlite::params;
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[test]
 fn link_core_extension() {
@@ -149,6 +149,86 @@ fn test_table_updates() {
         assert_eq!(
             stream.next().await,
             Some(json!([{"name": "Test"},{"name": "Test2"},{"name": "Test3"},{"name": "Test4"}]))
+        );
+    });
+}
+
+#[test]
+fn test_watch_statement() {
+    let test = DatabaseTest::new();
+    let db = Arc::new(test.test_dir_database());
+
+    future::block_on(async move {
+        let mut stream = db
+            .watch_statement(
+                "SELECT name FROM users".to_string(),
+                params![],
+                |stmt, params| {
+                    let mut rows = stmt.query(params)?;
+                    let mut names = vec![];
+                    while let Some(row) = rows.next()? {
+                        let name = row.get(0)?;
+                        names.push(Value::String(name));
+                    }
+
+                    Ok(Value::Array(names))
+                },
+            )
+            .boxed_local();
+
+        // Initial query.
+        assert_eq!(stream.next().await.unwrap().unwrap(), json!([]));
+
+        execute(
+            &db,
+            "INSERT INTO users (id, name) VALUES (uuid(), ?)",
+            params!["Test"],
+        )
+        .await;
+        assert_eq!(stream.next().await.unwrap().unwrap(), json!(["Test"]));
+
+        {
+            let mut writer = db.writer().await.unwrap();
+            let writer = writer.transaction().unwrap();
+
+            writer
+                .execute(
+                    "INSERT INTO users (id, name) VALUES (uuid(), ?)",
+                    params!["Test2"],
+                )
+                .unwrap();
+            writer
+                .execute(
+                    "INSERT INTO users (id, name) VALUES (uuid(), ?)",
+                    params!["Test3"],
+                )
+                .unwrap();
+
+            writer.commit().unwrap();
+        }
+
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            json!(["Test", "Test2", "Test3"])
+        );
+
+        {
+            let mut writer = db.writer().await.unwrap();
+            let writer = writer.transaction().unwrap();
+
+            writer.execute("DELETE FROM users", params![]).unwrap();
+            // Transactions we're rolling back should not impact streams.
+        }
+
+        execute(
+            &db,
+            "INSERT INTO users (id, name) VALUES (uuid(), ?)",
+            params!["Test4"],
+        )
+        .await;
+        assert_eq!(
+            stream.next().await.unwrap().unwrap(),
+            json!(["Test", "Test2", "Test3", "Test4"])
         );
     });
 }
