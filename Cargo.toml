@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
-members = [ "examples/egui_todolist","powersync", "powersync_test_utils"]
+members = [
+    "powersync",
+    "powersync_test_utils",
+    "examples/egui_todolist"
+]
 
 [workspace.package]
 repository = "https://github.com/powersync-ja/powersync-native"

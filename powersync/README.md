@@ -116,8 +116,3 @@ This SDK is in development. Some items that are still being worked on are:
 
 1. Token prefetching and caching.
 2. Unit tests for CRUD uploads.
-
-Also, this crate's `build.rs` dynamically downloads a binary
-(the [PowerSync core extension](https://github.com/powersync-ja/powersync-sqlite-core/)) to link into the final
-executable. The reason is that, while this library works with stable Rust, the core extension requires a nightly build.
-We'll work towards making the core extension a regular Rust crate supporting stable compilers in the future.

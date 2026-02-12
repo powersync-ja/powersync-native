@@ -4,9 +4,9 @@ mod sync;
 mod util;
 
 pub use db::PowerSyncDatabase;
+pub use db::crud::{CrudEntry, CrudTransaction, UpdateType};
 #[cfg(feature = "ffi")]
 pub use db::internal::InnerPowerSyncState;
-pub use db::crud::{CrudEntry, CrudTransaction, UpdateType};
 pub use db::pool::{ConnectionPool, LeasedConnection};
 pub use db::streams::StreamSubscription;
 pub use db::streams::StreamSubscriptionOptions;

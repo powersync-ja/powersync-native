@@ -1,6 +1,7 @@
+use std::borrow::Cow;
+use std::collections::HashSet;
+use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
-
-use futures_lite::{FutureExt, Stream, StreamExt};
 
 use crate::db::async_support::AsyncDatabaseTasks;
 use crate::sync::coordinator::SyncCoordinator;
@@ -15,6 +16,9 @@ use crate::{
     schema::Schema,
     sync::{download::DownloadActor, status::SyncStatusData, upload::UploadActor},
 };
+use futures_lite::stream::{once, once_future};
+use futures_lite::{FutureExt, Stream, StreamExt};
+use rusqlite::{Params, Statement, params};
 
 mod async_support;
 pub mod core_extension;
@@ -40,6 +44,9 @@ pub struct PowerSyncDatabase {
 /// the database is active.
 /// Then, call [Self::connect] to establish a connection to the PowerSync service.
 impl PowerSyncDatabase {
+    const PS_DATA_PREFIX: &'static str = "ps_data__";
+    const PS_DATA_LOCAL_PREFIX: &'static str = "ps_data_local__";
+
     pub fn new(env: PowerSyncEnvironment, schema: Schema) -> Self {
         let coordinator = Arc::new(SyncCoordinator::default());
 
@@ -84,24 +91,142 @@ impl PowerSyncDatabase {
     /// The `emit_initially` option can be used to control whether the stream should emit as well
     /// when polled for the first time. This can be useful to build streams emitting a complete
     /// snapshot of results every time a source table is changed.
-    pub fn watch_tables<'a>(
+    pub fn watch_tables<'a, Tables: IntoIterator<Item = impl Into<Cow<'a, str>>>>(
         &self,
         emit_initially: bool,
-        tables: impl IntoIterator<Item = &'a str>,
-    ) -> impl Stream<Item = ()> {
+        tables: Tables,
+    ) -> impl Stream<Item = ()> + 'static {
         self.inner.env.pool.update_notifiers().listen(
             emit_initially,
             tables
                 .into_iter()
                 .flat_map(|s| {
+                    let s = s.into();
+
                     [
-                        s.to_string(),
-                        format!("ps_data__{s}"),
-                        format!("ps_data_local__{s}"),
+                        format!("{}{s}", Self::PS_DATA_PREFIX),
+                        format!("{}{s}", Self::PS_DATA_LOCAL_PREFIX),
+                        Cow::into_owned(s),
                     ]
                 })
                 .collect(),
         )
+    }
+
+    /// Returns an asynchronous [Stream] emitting snapshots of a `SELECT` statement every time
+    /// source tables are modified.
+    ///
+    /// `sql` is the `SELECT` statement to execute and `params` are parameters to use.
+    /// The `read` function obtains the raw prepared statement and a copy of parameters to use,
+    /// and can run the statements into desired results.
+    ///
+    /// This method is a core building block for reactive applications with PowerSync - since it
+    /// updates automatically, all writes (regardless of whether they're local or due to synced
+    /// writes from your backend) are reflected.
+    pub fn watch_statement<T, F, P: Params + Clone + 'static>(
+        &self,
+        sql: String,
+        params: P,
+        read: F,
+    ) -> impl Stream<Item = Result<T, PowerSyncError>> + 'static
+    where
+        for<'a> F: (Fn(&'a mut Statement, P) -> Result<T, PowerSyncError>) + 'static + Clone,
+    {
+        // Find and watch referenced tables. We assume the set of read tables is fixed for a given
+        // SQL query and parameters. We also want this to emit initially without an update so that
+        // this stream can emit the initial snapshot.
+        let update_notifications =
+            self.emit_on_statement_changes(true, sql.to_string(), params.clone());
+
+        let db = self.clone();
+        // Note that this does not necessarily re-run for every update notification: If multiple
+        // updates happened while `then` or a downstream consumer is busy, they will be batched and
+        // emitted as a single notification. This matches the backpressure behavior of our other
+        // SDKs.
+        update_notifications.then(move |notification| {
+            let db = db.clone();
+            let sql = sql.clone();
+            let params = params.clone();
+            let mapper = read.clone();
+
+            async move {
+                if let Err(e) = notification {
+                    return Err(e);
+                }
+
+                let reader = db.reader().await?;
+                let mut stmt = reader.prepare_cached(&sql)?;
+
+                mapper(&mut stmt, params)
+            }
+        })
+    }
+
+    fn emit_on_statement_changes(
+        &self,
+        emit_initially: bool,
+        sql: String,
+        params: impl Params + 'static,
+    ) -> impl Stream<Item = Result<(), PowerSyncError>> + 'static {
+        // Stream emitting referenced tables once.
+        let tables = once_future(self.clone().find_tables(sql, params));
+
+        // Stream emitting updates, or a single error if we couldn't resolve tables.
+        let db = self.clone();
+        tables.flat_map(move |referenced_tables| match referenced_tables {
+            Ok(referenced_tables) => db
+                .watch_tables(emit_initially, referenced_tables)
+                .map(Ok)
+                .boxed(),
+            Err(e) => once(Err(e)).boxed(),
+        })
+    }
+
+    /// Finds all tables that are used in a given select statement.
+    ///
+    /// This can be used together with [watch_tables] to build an auto-updating stream of queries.
+    async fn find_tables<P: Params>(
+        self,
+        sql: impl Into<Cow<'static, str>>,
+        params: P,
+    ) -> Result<Vec<String>, PowerSyncError> {
+        let reader = self.reader().await?;
+        let mut stmt = reader.prepare(&format!("EXPLAIN {}", sql.into()))?;
+        let mut rows = stmt.query(params)?;
+
+        let mut find_table_stmt =
+            reader.prepare_cached("SELECT tbl_name FROM sqlite_schema WHERE rootpage = ?")?;
+        let mut found_tables = HashSet::new();
+
+        while let Some(row) = rows.next()? {
+            let opcode = row.get_ref("opcode")?;
+            let p2 = row.get_ref("p2")?;
+            let p3 = row.get_ref("p3")?;
+
+            if matches!(opcode.as_str(), Ok("OpenRead"))
+                && matches!(p3.as_i64(), Ok(0))
+                && let Ok(page) = p2.as_i64()
+            {
+                let mut found_table = find_table_stmt.query(params![page])?;
+                if let Some(found_table) = found_table.next()? {
+                    let table_name: String = found_table.get(0)?;
+                    found_tables.insert(table_name);
+                }
+            }
+        }
+
+        Ok(found_tables
+            .into_iter()
+            .map(|table| {
+                if let Some(name) = table.strip_prefix(Self::PS_DATA_PREFIX) {
+                    name.to_string()
+                } else if let Some(name) = table.strip_prefix(Self::PS_DATA_LOCAL_PREFIX) {
+                    name.to_string()
+                } else {
+                    table
+                }
+            })
+            .collect())
     }
 
     /// Returns a [Stream] traversing through transactions that have been completed on this
@@ -197,4 +322,10 @@ impl PowerSyncDatabase {
         drop(unsafe { Arc::from_raw(inner) });
     }
      */
+}
+
+impl Debug for PowerSyncDatabase {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PowerSyncDatabase").finish_non_exhaustive()
+    }
 }
