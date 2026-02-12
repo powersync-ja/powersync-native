@@ -44,6 +44,9 @@ pub struct PowerSyncDatabase {
 /// the database is active.
 /// Then, call [Self::connect] to establish a connection to the PowerSync service.
 impl PowerSyncDatabase {
+    const PS_DATA_PREFIX: &'static str = "ps_data__";
+    const PS_DATA_LOCAL_PREFIX: &'static str = "ps_data_local__";
+
     pub fn new(env: PowerSyncEnvironment, schema: Schema) -> Self {
         let coordinator = Arc::new(SyncCoordinator::default());
 
@@ -129,10 +132,17 @@ impl PowerSyncDatabase {
     where
         for<'a> F: (Fn(&'a mut Statement, P) -> Result<T, PowerSyncError>) + 'static + Clone,
     {
+        // Find and watch referenced tables. We assume the set of read tables is fixed for a given
+        // SQL query and parameters. We also want this to emit initially without an update so that
+        // this stream can emit the initial snapshot.
         let update_notifications =
             self.emit_on_statement_changes(true, sql.to_string(), params.clone());
 
         let db = self.clone();
+        // Note that this does not necessarily re-run for every update notification: If multiple
+        // updates happened while `then` or a downstream consumer is busy, they will be batched and
+        // emitted as a single notification. This matches the backpressure behavior of our other
+        // SDKs.
         update_notifications.then(move |notification| {
             let db = db.clone();
             let sql = sql.clone();
@@ -207,20 +217,17 @@ impl PowerSyncDatabase {
 
         Ok(found_tables
             .into_iter()
-            .map(|mut table| {
-                if table.starts_with(Self::PS_DATA_PREFIX) {
-                    table.split_off(Self::PS_DATA_PREFIX.len())
-                } else if table.starts_with(Self::PS_DATA_LOCAL_PREFIX) {
-                    table.split_off(Self::PS_DATA_LOCAL_PREFIX.len())
+            .map(|table| {
+                if let Some(name) = table.strip_prefix(Self::PS_DATA_PREFIX) {
+                    name.to_string()
+                } else if let Some(name) = table.strip_prefix(Self::PS_DATA_LOCAL_PREFIX) {
+                    name.to_string()
                 } else {
                     table
                 }
             })
             .collect())
     }
-
-    const PS_DATA_PREFIX: &'static str = "ps_data__";
-    const PS_DATA_LOCAL_PREFIX: &'static str = "ps_data_local__";
 
     /// Returns a [Stream] traversing through transactions that have been completed on this
     /// database.
