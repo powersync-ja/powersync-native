@@ -3672,7 +3672,7 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "powersync"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "async-channel 2.5.0",
  "async-executor",
@@ -3702,9 +3702,9 @@ dependencies = [
 
 [[package]]
 name = "powersync_core"
-version = "0.4.9"
+version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0af9ed053adc187cbbd9c86dadc7c25741ed3703fa5059c4ca3dc1cebfbf69e"
+checksum = "ea6becb46fb7b7328822ff3aad25dd537287772bfbc21052e978cb4e10f3014e"
 dependencies = [
  "bytes 1.10.1",
  "const_format",
@@ -3722,9 +3722,9 @@ dependencies = [
 
 [[package]]
 name = "powersync_sqlite_nostd"
-version = "0.4.9"
+version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e8c6b60031b6bca22b3a8fa737283b370f2b493b2e82f4db7af6a9b1fb7aa47"
+checksum = "1c9f1e5afe9c29d52a5e44550175eceb93b150067f05d97732bd65c57ef37827"
 dependencies = [
  "bindgen",
  "num-derive 0.4.2",
