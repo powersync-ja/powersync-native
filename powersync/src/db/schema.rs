@@ -193,7 +193,14 @@ impl Serialize for TableOptions {
     where
         S: Serializer,
     {
-        let mut serializer = serializer.serialize_struct("TableOptions", 5)?;
+        let mut serializer = serializer.serialize_struct(
+            "TableOptions",
+            4 + if self.track_previous_values.is_some() {
+                2
+            } else {
+                0
+            },
+        )?;
 
         serializer.serialize_field("local_only", &self.local_only)?;
         serializer.serialize_field("insert_only", &self.insert_only)?;
@@ -212,7 +219,8 @@ impl Serialize for TableOptions {
                 &include_old.only_when_changed,
             )?;
         } else {
-            serializer.serialize_field("include_old_only_when_changed", &false)?;
+            serializer.skip_field("include_old")?;
+            serializer.skip_field("include_old_only_when_changed")?;
         }
 
         serializer.end()
@@ -455,6 +463,7 @@ impl TrackPreviousValues {
 #[cfg(test)]
 mod test {
     use crate::schema::{Column, RawTable, RawTableSchema, Table, TrackPreviousValues};
+    use serde_json::json;
 
     #[test]
     fn handles_options_track_metadata() {
@@ -513,18 +522,19 @@ mod test {
     #[test]
     fn handles_options_track_previous_column_filter() {
         let value = serde_json::to_value(Table::create("foo", vec![], |tbl| {
-            tbl.options.track_previous_values = Some(TrackPreviousValues::all())
+            tbl.options.track_previous_values = Some(TrackPreviousValues {
+                column_filter: Some(vec!["a".into()]),
+                only_when_changed: true,
+            })
         }))
         .unwrap();
         let value = value.as_object().unwrap();
 
-        assert!(value.get("include_old").unwrap().as_bool().unwrap());
-        assert!(
-            !value
-                .get("include_old_only_when_changed")
-                .unwrap()
-                .as_bool()
-                .unwrap(),
+        let include_old = value.get("include_old").unwrap();
+        assert_eq!(*include_old, json!(["a"]));
+        assert_eq!(
+            *value.get("include_old_only_when_changed").unwrap(),
+            json!(true)
         );
     }
 
