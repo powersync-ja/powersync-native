@@ -1,6 +1,9 @@
 use futures_lite::{StreamExt, future};
 use powersync::PowerSyncDatabase;
-use powersync::schema::{Column, Schema, Table, TrackPreviousValues};
+use powersync::schema::{
+    Column, PendingStatement, PendingStatementValue, RawTable, RawTableSchema, Schema, Table,
+    TrackPreviousValues,
+};
 use powersync_test_utils::{DatabaseTest, execute, query_all};
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -14,7 +17,7 @@ fn include_metadata() {
             schema
                 .tables
                 .push(Table::create("lists", vec![Column::text("name")], |tbl| {
-                    tbl.track_metadata = true
+                    tbl.options.track_metadata = true
                 }));
             schema
         });
@@ -43,7 +46,7 @@ fn include_old_values() {
             schema.tables.push(Table::create(
                 "lists",
                 vec![Column::text("name"), Column::text("content")],
-                |tbl| tbl.track_previous_values = Some(TrackPreviousValues::all()),
+                |tbl| tbl.options.track_previous_values = Some(TrackPreviousValues::all()),
             ));
             schema
         });
@@ -80,7 +83,7 @@ fn include_old_values_with_filter() {
                 "lists",
                 vec![Column::text("name"), Column::text("content")],
                 |tbl| {
-                    tbl.track_previous_values = Some(TrackPreviousValues {
+                    tbl.options.track_previous_values = Some(TrackPreviousValues {
                         column_filter: Some(vec!["name".into()]),
                         only_when_changed: false,
                     })
@@ -124,7 +127,7 @@ fn include_old_values_when_changed() {
                 "lists",
                 vec![Column::text("name"), Column::text("content")],
                 |tbl| {
-                    tbl.track_previous_values = Some(TrackPreviousValues {
+                    tbl.options.track_previous_values = Some(TrackPreviousValues {
                         column_filter: None,
                         only_when_changed: true,
                     })
@@ -164,7 +167,7 @@ fn ignore_empty_update() {
             schema.tables.push(Table::create(
                 "lists",
                 vec![Column::text("name"), Column::text("content")],
-                |tbl| tbl.ignore_empty_updates = true,
+                |tbl| tbl.options.ignore_empty_updates = true,
             ));
             schema
         });
@@ -259,5 +262,137 @@ fn crud_transactions() {
 
         let remaining = db.next_crud_transaction().await.unwrap().unwrap();
         assert_eq!(remaining.crud.len(), 15);
+    });
+}
+
+#[test]
+fn raw_table_clear() {
+    future::block_on(async move {
+        let mut schema = Schema::default();
+        let mut raw_table = RawTable::with_statements(
+            "foo",
+            PendingStatement {
+                sql: "unused".into(),
+                params: vec![],
+            },
+            PendingStatement {
+                sql: "unused".into(),
+                params: vec![],
+            },
+        );
+        raw_table.clear = Some("DELETE FROM users".into());
+        schema.raw_tables.push(raw_table);
+
+        let test = DatabaseTest::new();
+        let db = PowerSyncDatabase::new(test.in_memory(), schema);
+
+        {
+            let writer = db.writer().await.unwrap();
+            writer
+                .execute("CREATE TABLE users (name TEXT);", params![])
+                .unwrap();
+            writer
+                .execute("INSERT INTO users (name) VALUES (?);", params!["test"])
+                .unwrap();
+        }
+
+        assert_eq!(
+            query_all(&db, "SELECT * FROM users", params![]).await,
+            json!([{"name": "test"}]),
+        );
+
+        // Running powersync_clear should delete from users
+        {
+            let writer = db.writer().await.unwrap();
+            let mut stmt = writer.prepare("SELECT powersync_clear(0)").unwrap();
+            stmt.query_one(params![], |_| Ok(())).unwrap();
+        }
+
+        assert_eq!(
+            query_all(&db, "SELECT * FROM users", params![]).await,
+            json!([]),
+        );
+    });
+}
+
+#[test]
+fn raw_table_crud_trigger() {
+    future::block_on(async move {
+        let mut schema = Schema::default();
+
+        schema.raw_tables.push(RawTable::with_schema("foo", {
+            let mut info = RawTableSchema::new("users");
+            info.synced_columns = Some(vec!["name".into()]);
+            info
+        }));
+        let serialized_table = serde_json::to_string(&schema.raw_tables[0]).unwrap();
+
+        let test = DatabaseTest::new();
+        let db = PowerSyncDatabase::new(test.in_memory(), Default::default());
+
+        {
+            let mut writer = db.writer().await.unwrap();
+            writer
+                .execute(
+                    "CREATE TABLE users (id TEXT, name TEXT, local_column INTEGER);",
+                    params![],
+                )
+                .unwrap();
+
+            let mut trigger_stmt = writer
+                .prepare("SELECT powersync_create_raw_table_crud_trigger(?,?,?)")
+                .unwrap();
+
+            for write in &["INSERT", "UPDATE", "DELETE"] {
+                trigger_stmt
+                    .query_one(
+                        params![serialized_table, format!("users_{write}"), write],
+                        |_| Ok(()),
+                    )
+                    .unwrap();
+            }
+            drop(trigger_stmt);
+
+            let tx = writer.transaction().unwrap();
+            tx.execute_batch(
+                "\
+INSERT INTO users(id, name, local_column) VALUES ('id', 'name', 42);
+UPDATE users SET local_column = local_column + 1; -- should not create a ps_crud entry
+DELETE FROM users;
+",
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let crud = db.next_crud_transaction().await.unwrap().unwrap();
+        assert_eq!(crud.crud.len(), 2);
+    });
+}
+
+#[test]
+fn raw_table_rest_column() {
+    future::block_on(async move {
+        let mut schema = Schema::default();
+        let raw_table = RawTable::with_statements(
+            "foo",
+            PendingStatement {
+                sql: "INSERT INTO users (name) VALUES ?".into(),
+                params: vec![PendingStatementValue::Rest],
+            },
+            PendingStatement {
+                sql: "unused".into(),
+                params: vec![],
+            },
+        );
+        schema.raw_tables.push(raw_table);
+
+        let test = DatabaseTest::new();
+        let db = PowerSyncDatabase::new(test.in_memory(), schema);
+
+        // Just use the database to ensure the schema with the rest column has been installed.
+        // We don't test the behavior of that here, the core extension has tests for that. This
+        // verifies we generate a JSON structure understood by the core extension.
+        db.reader().await.unwrap();
     });
 }
