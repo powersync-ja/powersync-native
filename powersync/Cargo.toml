@@ -1,6 +1,6 @@
 [package]
 name = "powersync"
-version = "0.0.3"
+version = "0.0.4"
 
 edition = "2024"
 license = "Apache-2.0"
@@ -39,7 +39,7 @@ thiserror = "2.0.16"
 tokio = { version = "1", features = ["time", "rt"], optional = true }
 url = "2.5.7"
 serde_with = "3.15.0"
-powersync_core = { version = "=0.4.9", features = ["static"] }
+powersync_core = { version = "=0.4.11", features = ["static"] }
 
 [dev-dependencies]
 async-executor = "1.13.3"
