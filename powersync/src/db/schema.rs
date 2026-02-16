@@ -29,6 +29,10 @@ impl Schema {
             table.validate()?;
         }
 
+        for table in &self.raw_tables {
+            table.validate()?;
+        }
+
         Ok(())
     }
 
@@ -349,6 +353,21 @@ impl RawTable {
             clear: None,
         }
     }
+
+    fn validate(&self) -> Result<(), PowerSyncError> {
+        if let Some(schema) = &self.schema {
+            schema.options.validate()?;
+        } else {
+            // If we don't have a schema, statements need to be given.
+            if self.put.is_none() || self.delete.is_none() {
+                return Err(PowerSyncError::argument_error(
+                    "Raw tables without a schema need to provide put and delete statements.",
+                ));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Information about the schema of a [RawTable] in the local database.
@@ -435,7 +454,7 @@ impl TrackPreviousValues {
 
 #[cfg(test)]
 mod test {
-    use crate::schema::{Column, Table, TrackPreviousValues};
+    use crate::schema::{Column, RawTable, RawTableSchema, Table, TrackPreviousValues};
 
     #[test]
     fn handles_options_track_metadata() {
@@ -524,6 +543,14 @@ mod test {
         assert!(table.validate().is_ok());
 
         table.columns.push(Column::integer("a"));
+        assert!(table.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_raw_table_missing_statements() {
+        let mut table = RawTable::with_schema("users", RawTableSchema::new("users"));
+        table.schema = None;
+
         assert!(table.validate().is_err());
     }
 }
