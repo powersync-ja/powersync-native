@@ -297,7 +297,7 @@ pub struct IndexedColumn {
 /// When using raw tables, you are responsible for creating and migrating them when they've changed.
 /// Further, triggers are necessary to collect local writes to those tables. For more information,
 /// see [the documentation](https://docs.powersync.com/client-sdks/advanced/raw-tables).
-#[derive(Serialize, Debug)]
+#[derive(Debug)]
 pub struct RawTable {
     /// The name of the table as used by the sync service.
     ///
@@ -310,7 +310,6 @@ pub struct RawTable {
     ///
     /// If this is set, [Self::put] and [Self::delete] can be omitted because these statements can
     /// be inferred from the schema.
-    #[serde(flatten)]
     pub schema: Option<RawTableSchema>,
 
     /// A statement responsible for inserting or updating a row in this raw table based on data from
@@ -378,17 +377,61 @@ impl RawTable {
     }
 }
 
+impl Serialize for RawTable {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        // Manual Serialize implementation so that RawTableSchema.table_name can default to
+        // the name of the RawTable.
+        #[derive(Serialize)]
+        struct SerializableRawTableSchema<'a> {
+            table_name: &'a SchemaString,
+            synced_columns: &'a Option<Vec<SchemaString>>,
+            #[serde(flatten)]
+            options: &'a TableOptions,
+        }
+
+        #[derive(Serialize)]
+        struct SerializableRawTable<'a> {
+            name: &'a str,
+            #[serde(flatten)]
+            schema: &'a Option<SerializableRawTableSchema<'a>>,
+            put: &'a Option<PendingStatement>,
+            delete: &'a Option<PendingStatement>,
+            clear: &'a Option<SchemaString>,
+        }
+
+        let schema = self.schema.as_ref().map(|s| SerializableRawTableSchema {
+            table_name: s.table_name.as_ref().unwrap_or(&self.name),
+            synced_columns: &s.synced_columns,
+            options: &s.options,
+        });
+        let serializable = SerializableRawTable {
+            name: self.name.as_ref(),
+            schema: &schema,
+            put: &self.put,
+            delete: &self.delete,
+            clear: &self.clear,
+        };
+
+        serializable.serialize(serializer)
+    }
+}
+
 /// Information about the schema of a [RawTable] in the local database.
 ///
 /// This information is optional when declaring raw tables. However, providing it allows the sync
 /// client to infer [RawTable::put] and [RawTable::delete] statements automatically.
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Default)]
 pub struct RawTableSchema {
     /// The actual name of the raw table in the local schema.
     ///
     /// This is used to infer statements for the sync client. It can also be used to auto-generate
     /// triggers forwarding writes on raw tables into the CRUD upload queue.
-    pub table_name: SchemaString,
+    ///
+    /// When absent, the [RawTable.name] is used as a default.
+    pub table_name: Option<SchemaString>,
     /// An optional filter of columns that should be synced.
     ///
     /// By default, all columns in a raw table are considered to be synced. If a filter is
@@ -400,16 +443,6 @@ pub struct RawTableSchema {
     /// generates triggers.
     #[serde(flatten)]
     pub options: TableOptions,
-}
-
-impl RawTableSchema {
-    pub fn new(table_name: impl Into<SchemaString>) -> Self {
-        Self {
-            table_name: table_name.into(),
-            synced_columns: None,
-            options: Default::default(),
-        }
-    }
 }
 
 /// An SQL statement to be run by the sync client against raw tables.
@@ -558,7 +591,7 @@ mod test {
 
     #[test]
     fn invalid_raw_table_missing_statements() {
-        let mut table = RawTable::with_schema("users", RawTableSchema::new("users"));
+        let mut table = RawTable::with_schema("users", RawTableSchema::default());
         table.schema = None;
 
         assert!(table.validate().is_err());

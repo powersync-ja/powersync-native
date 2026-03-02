@@ -321,9 +321,11 @@ fn raw_table_crud_trigger() {
         let mut schema = Schema::default();
 
         schema.raw_tables.push(RawTable::with_schema("foo", {
-            let mut info = RawTableSchema::new("users");
-            info.synced_columns = Some(vec!["name".into()]);
-            info
+            RawTableSchema {
+                table_name: Some("users".into()),
+                synced_columns: Some(vec!["name".into()]),
+                ..Default::default()
+            }
         }));
         let serialized_table = serde_json::to_string(&schema.raw_tables[0]).unwrap();
 
