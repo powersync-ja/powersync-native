@@ -30,6 +30,13 @@ impl Schema {
         }
 
         for table in &self.raw_tables {
+            if !table_names.insert(table.name.as_ref()) {
+                return Err(PowerSyncError::argument_error(format!(
+                    "Duplicate table name: {}",
+                    table.name,
+                )));
+            }
+
             table.validate()?;
         }
 
@@ -111,7 +118,7 @@ impl Table {
         for column in &self.columns {
             if column.name == "id" {
                 return Err(PowerSyncError::argument_error(
-                    "id column is automatically added, cusotm id columns are not supported",
+                    "id column is automatically added, custom id columns are not supported",
                 ));
             }
 
@@ -204,10 +211,12 @@ impl Serialize for TableOptions {
 
         serializer.serialize_field("local_only", &self.local_only)?;
         serializer.serialize_field("insert_only", &self.insert_only)?;
+        // Intentional field name, called ignore_empty_update in core extension
         serializer.serialize_field("ignore_empty_update", &self.ignore_empty_updates)?;
         serializer.serialize_field("include_metadata", &self.track_metadata)?;
 
         if let Some(include_old) = &self.track_previous_values {
+            // Intentional field name, "track previous" is called "include_old" in core extension.
             if let Some(filter) = &include_old.column_filter {
                 serializer.serialize_field("include_old", &filter)?;
             } else {
@@ -495,7 +504,7 @@ impl TrackPreviousValues {
 
 #[cfg(test)]
 mod test {
-    use crate::schema::{Column, RawTable, RawTableSchema, Table, TrackPreviousValues};
+    use crate::schema::{Column, RawTable, RawTableSchema, Schema, Table, TrackPreviousValues};
     use serde_json::json;
 
     #[test]
@@ -595,5 +604,17 @@ mod test {
         table.schema = None;
 
         assert!(table.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_duplicate_table() {
+        let table = Table::create("users", vec![], |_| {});
+        let raw_table = RawTable::with_schema("users", RawTableSchema::default());
+        let schema = Schema {
+            tables: vec![table],
+            raw_tables: vec![raw_table],
+        };
+
+        assert!(schema.validate().is_err());
     }
 }
