@@ -1,11 +1,10 @@
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{pin::Pin, time::Duration};
 
-use http_client::HttpClient;
 use powersync_core::powersync_init_static;
 
-use crate::error::PowerSyncError;
-
 use super::db::pool::ConnectionPool;
+use crate::error::PowerSyncError;
+use crate::http::HttpClient;
 
 /// All external dependencies required for the PowerSync SDK.
 ///
@@ -14,21 +13,21 @@ use super::db::pool::ConnectionPool;
 /// independent way to delay futures.
 pub struct PowerSyncEnvironment {
     /// The [HttpClient] used to connect to the sync service.
-    pub(crate) client: Arc<dyn HttpClient>,
+    pub(crate) client: Box<dyn HttpClient>,
     /// The [ConnectionPool] used to obtain connections for queries asynchronously.
     pub(crate) pool: ConnectionPool,
     /// The [Timer] implementation used to delay sync iterations after errors.
-    pub(crate) timer: Box<dyn Timer + Send + Sync>,
+    pub(crate) timer: &'static (dyn Timer + Send + Sync),
 }
 
 impl PowerSyncEnvironment {
-    pub fn custom(
-        client: Arc<dyn HttpClient>,
+    pub fn custom<C: HttpClient>(
+        client: C,
         pool: ConnectionPool,
-        timer: Box<dyn Timer + Send + Sync>,
+        timer: &'static (dyn Timer + Send + Sync),
     ) -> Self {
         Self {
-            client,
+            client: Box::new(client),
             pool,
             timer,
         }
@@ -52,7 +51,7 @@ impl PowerSyncEnvironment {
 
     /// A [Timer] implementation based on [async_io::Timer].
     #[cfg(feature = "smol")]
-    pub fn async_io_timer() -> impl Timer {
+    pub fn async_io_timer() -> &'static (dyn Timer + Send + Sync) {
         use async_io::Timer as PlatformTimer;
 
         struct AsyncIoTimer;
@@ -66,12 +65,12 @@ impl PowerSyncEnvironment {
                 .boxed()
             }
         }
-        AsyncIoTimer
+        &AsyncIoTimer
     }
 
     /// A [Timer] implementation based on [tokio::time::sleep].
     #[cfg(feature = "tokio")]
-    pub fn tokio_timer() -> impl Timer {
+    pub fn tokio_timer() -> &'static (dyn Timer + Send + Sync) {
         use tokio::time::sleep;
 
         struct TokioTimer;
@@ -82,7 +81,7 @@ impl PowerSyncEnvironment {
                 sleep(duration).boxed()
             }
         }
-        TokioTimer
+        &TokioTimer
     }
 }
 

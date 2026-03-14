@@ -2,11 +2,6 @@ use std::{str::FromStr, sync::Arc};
 
 use async_trait::async_trait;
 use futures_lite::StreamExt;
-use http_client::{
-    HttpClient,
-    http_types::{Mime, Request, StatusCode},
-    isahc::IsahcClient,
-};
 use log::warn;
 use powersync::{
     BackendConnector, ConnectionPool, PowerSyncCredentials, PowerSyncDatabase, SyncOptions,
@@ -15,6 +10,7 @@ use powersync::{
     error::PowerSyncError,
     schema::{Column, Schema, Table},
 };
+use reqwest::{Method, Request, StatusCode};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -86,17 +82,15 @@ impl TodoList {
 #[derive(Clone)]
 pub struct TodoDatabase {
     pub db: PowerSyncDatabase,
-    client: Arc<IsahcClient>,
 }
 
 impl TodoDatabase {
     pub fn new(rt: &Runtime) -> Self {
         let conn = Connection::open_in_memory().expect("should open connection");
-        let client = Arc::new(IsahcClient::new());
         let env = PowerSyncEnvironment::custom(
-            client.clone(),
+            reqwest::Client::new(),
             ConnectionPool::single_connection(conn),
-            Box::new(PowerSyncEnvironment::tokio_timer()),
+            PowerSyncEnvironment::tokio_timer(),
         );
         let mut schema = Schema::default();
         schema.tables.push(TodoList::schema());
@@ -105,7 +99,7 @@ impl TodoDatabase {
         let db = PowerSyncDatabase::new(env, schema);
         db.async_tasks().spawn_with_tokio_runtime(rt);
 
-        Self { db, client }
+        Self { db }
     }
 
     pub async fn connect(&self) {
@@ -117,15 +111,14 @@ impl TodoDatabase {
     }
 
     async fn fetch_credentials_self_hosted(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-        let request = Request::get("http://localhost:6060/api/auth/token");
-        let mut response = self.client.send(request).await?;
+        let response = reqwest::get("http://localhost:6060/api/auth/token").await?;
 
         #[derive(Deserialize)]
         struct TokenResponse {
             token: String,
         }
 
-        let token: TokenResponse = response.body_json().await?;
+        let token: TokenResponse = response.json().await?;
         Ok(PowerSyncCredentials {
             endpoint: "http://localhost:8080".to_string(),
             token: token.token,
@@ -167,15 +160,20 @@ impl BackendConnector for TodoDatabase {
                 });
             }
 
-            let mut request = Request::post("http://localhost:6060/api/data");
             let serialized = serde_json::to_string(&BackendBatch { batch: entries })?;
-            request.set_body(serialized);
-            request.set_content_type(Mime::from_str("application/json").unwrap());
 
-            let mut response = self.client.send(request).await?;
-            if response.status() != StatusCode::Ok {
-                let body = response.body_string().await?;
-                warn!("Received {} from /api/data: {}", response.status(), body);
+            let client = reqwest::Client::new();
+            let response = client
+                .post("http://localhost:6060/api/data")
+                .header("Content-Type", "application/json")
+                .body(serialized)
+                .send()
+                .await?;
+
+            if response.status() != StatusCode::OK {
+                let status = response.status();
+                let body = response.text().await?;
+                warn!("Received {} from /api/data: {}", status, body);
             }
 
             last_tx = Some(tx);

@@ -79,11 +79,7 @@ impl DatabaseTest {
             }
         }
 
-        PowerSyncEnvironment::custom(
-            Arc::new(self.http.clone().client()),
-            pool,
-            Box::new(DisabledTimer),
-        )
+        PowerSyncEnvironment::custom(self.http.clone().client(), pool, &DisabledTimer)
     }
 
     pub fn default_schema() -> Schema {

@@ -1,7 +1,9 @@
 mod bson_split;
+mod line_split;
 mod shared_future;
 
 pub use bson_split::BsonObjects;
+pub use line_split::LineSplitter;
 use serde::de::Error;
 use serde::{Deserialize, Serialize};
 use serde_json::value::to_raw_value;

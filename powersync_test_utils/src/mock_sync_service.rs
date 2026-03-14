@@ -1,22 +1,19 @@
-use std::{
-    io::Write,
-    str::FromStr,
-    sync::{Arc, Mutex},
-    task::Poll,
-};
-
+use crate::sync_line::{Checkpoint, DataLine, OplogEntry, SyncLine};
 use async_trait::async_trait;
-use futures_lite::{AsyncBufRead, AsyncRead, StreamExt, ready};
-use http_client::{
-    Body, Error, HttpClient, Request, Response,
-    http_types::{Mime, StatusCode},
-};
+use bytes::Bytes;
+use futures_lite::{Stream, StreamExt, ready, stream};
+use http::{Response, StatusCode};
 use pin_project_lite::pin_project;
+use powersync::http::{HttpClient, Request, ResponseBody};
 use powersync::{BackendConnector, PowerSyncCredentials, StreamPriority, error::PowerSyncError};
 use serde::Serialize;
 use serde_json::json;
-
-use crate::sync_line::{Checkpoint, DataLine, OplogEntry, SyncLine};
+use std::pin::Pin;
+use std::task::Context;
+use std::{
+    sync::{Arc, Mutex},
+    task::Poll,
+};
 
 pub struct MockSyncService {
     pub receive_requests: async_channel::Receiver<PendingSyncResponse>,
@@ -56,8 +53,8 @@ impl MockSyncService {
 
         #[async_trait]
         impl HttpClient for MockClient {
-            async fn send(&self, req: Request) -> Result<Response, Error> {
-                match req.url().path() {
+            async fn send(&self, req: Request) -> Result<Response<ResponseBody>, PowerSyncError> {
+                match req.url.path() {
                     "/sync/stream" => Ok(self.service.sync_stream(req).await),
                     "/write-checkpoint2.json" => {
                         Ok(self.service.generate_write_checkpoint_response())
@@ -70,18 +67,18 @@ impl MockSyncService {
         MockClient { service: self }
     }
 
-    async fn sync_stream(&self, mut req: Request) -> Response {
-        let body: serde_json::Value = req.body_json().await.unwrap();
-        let (send, recv) = async_channel::bounded(1);
+    async fn sync_stream(&self, req: Request) -> Response<ResponseBody> {
+        let body: serde_json::Value =
+            serde_json::from_slice(&req.body.unwrap_or_default()).unwrap();
 
-        let mut response = Response::new(StatusCode::Ok);
-        response.set_body(Body::from_reader(
-            Box::pin(MockSyncLinesResponse {
-                receive: recv,
-                pending_line: None,
-            }),
-            None,
-        ));
+        let (send, recv) = async_channel::bounded(1);
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .body(ResponseBody {
+                reader: MockSyncLinesResponse { receive: recv }.boxed(),
+                length: None,
+            })
+            .unwrap();
 
         self.send_requests
             .send(PendingSyncResponse {
@@ -94,16 +91,30 @@ impl MockSyncService {
         response
     }
 
-    fn generate_write_checkpoint_response(&self) -> Response {
+    fn generate_write_checkpoint_response(&self) -> Response<ResponseBody> {
         let data = { self.write_checkpoints.lock().unwrap()() };
-        let mut response = Response::new(StatusCode::Ok);
-        response.set_content_type(Mime::from_str("application/json").unwrap());
-        response.set_body(serde_json::to_string(&data).unwrap());
-        response
+        let data = Bytes::from(serde_json::to_vec(&data).unwrap());
+
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json")
+            .body(ResponseBody {
+                length: Some(data.len() as u64),
+                reader: stream::once(Ok(data)).boxed(),
+            })
+            .unwrap()
     }
 
-    fn generate_bad_request() -> Response {
-        Response::new(StatusCode::BadRequest)
+    fn generate_bad_request() -> Response<ResponseBody> {
+        let body = ResponseBody {
+            reader: stream::empty().boxed(),
+            length: Some(0),
+        };
+
+        Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(body)
+            .unwrap()
     }
 }
 
@@ -163,106 +174,22 @@ pin_project! {
     struct MockSyncLinesResponse {
         #[pin]
         receive: async_channel::Receiver<SyncLine<'static>>,
-        pending_line: Option<PendingLine>,
     }
 }
 
-struct PendingLine {
-    line: Vec<u8>,
-    offset: usize,
-}
+impl Stream for MockSyncLinesResponse {
+    type Item = Result<Bytes, PowerSyncError>;
 
-impl AsyncRead for MockSyncLinesResponse {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        mut buf: &mut [u8],
-    ) -> Poll<std::io::Result<usize>> {
-        let mut this = self.project();
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+        let line = ready!(this.receive.poll_next(cx)).map(|line| {
+            let mut writer = Vec::new();
+            serde_json::to_writer(&mut writer, &line).unwrap();
+            writer.push(b'\n');
+            Ok(Bytes::from(writer))
+        });
 
-        // Find a pending line to emit.
-        let line = {
-            match &mut this.pending_line {
-                Some(line) => line,
-                None => {
-                    let line = ready!(this.receive.poll_next(cx));
-                    match line {
-                        None => return Poll::Ready(Ok(0)),
-                        Some(line) => {
-                            let mut writer = Vec::new();
-                            serde_json::to_writer(&mut writer, &line).unwrap();
-                            writer.push(b'\n');
-
-                            this.pending_line.insert(PendingLine {
-                                line: writer,
-                                offset: 0,
-                            })
-                        }
-                    }
-                }
-            }
-        };
-
-        let available = line.line.len() - line.offset;
-        assert!(available > 0);
-
-        let written = buf.write(&line.line[line.offset..]).unwrap();
-        line.offset += written;
-
-        if written == available {
-            *this.pending_line = None;
-        }
-        Poll::Ready(Ok(written))
-    }
-}
-
-impl AsyncBufRead for MockSyncLinesResponse {
-    fn poll_fill_buf(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<std::io::Result<&[u8]>> {
-        let mut this = self.project();
-
-        // Find a pending line to emit.
-        let line = {
-            let pending = this.pending_line;
-            match pending {
-                Some(line) => line,
-                None => {
-                    let line = ready!(this.receive.poll_next(cx));
-                    match line {
-                        None => return Poll::Ready(Ok(&[])),
-                        Some(line) => {
-                            let mut writer = Vec::new();
-                            serde_json::to_writer(&mut writer, &line).unwrap();
-                            writer.push(b'\n');
-
-                            pending.insert(PendingLine {
-                                line: writer,
-                                offset: 0,
-                            })
-                        }
-                    }
-                }
-            }
-        };
-
-        let available = line.line.len() - line.offset;
-        assert!(available > 0);
-
-        let data = &line.line[line.offset..];
-
-        Poll::Ready(Ok(data))
-    }
-
-    fn consume(self: std::pin::Pin<&mut Self>, amt: usize) {
-        let mut this = self.project();
-        if let Some(pending) = &mut this.pending_line {
-            pending.offset += amt;
-            if pending.offset >= pending.line.len() {
-                *this.pending_line = None;
-            }
-        }
+        Poll::Ready(line)
     }
 }
 

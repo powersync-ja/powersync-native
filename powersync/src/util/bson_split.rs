@@ -1,31 +1,30 @@
+use crate::error::{PowerSyncError, RawPowerSyncError};
+use crate::http::ResponseStream;
+use bytes::Bytes;
+use futures_lite::{Stream, StreamExt, ready};
 use std::{
     cmp::min,
-    io::{Error, ErrorKind},
     pin::Pin,
     task::{Context, Poll},
 };
 
-use futures_lite::{AsyncBufRead, Stream, ready};
-use pin_project_lite::pin_project;
-
-pin_project! {
-    /// A [Stream] implementation splitting an underlying [AsyncBufRead] instance into unparsed BSON
-    /// objects by extracting frame information from the length prefix.
-    pub struct BsonObjects<R> {
-        #[pin]
-        reader:R,
-        buf: Vec<u8>,
-        remaining: RemainingBytes,
-    }
+/// A [Stream] implementation splitting an underlying [AsyncBufRead] instance into unparsed BSON
+/// objects by extracting frame information from the length prefix.
+pub struct BsonObjects {
+    stream: ResponseStream,
+    buf: Vec<u8>,
+    remaining: RemainingBytes,
+    current_event: Option<Bytes>,
 }
 
-impl<R: AsyncBufRead> BsonObjects<R> {
+impl BsonObjects {
     /// Creates a [BsonObjects] stream from a source reader [R].
-    pub fn new(reader: R) -> Self {
+    pub fn new(stream: ResponseStream) -> Self {
         Self {
-            reader,
+            stream,
             buf: Vec::new(),
             remaining: RemainingBytes::default(),
+            current_event: None,
         }
     }
 
@@ -33,17 +32,17 @@ impl<R: AsyncBufRead> BsonObjects<R> {
         target: &mut Vec<u8>,
         remaining: &mut RemainingBytes,
         mut buf: &[u8],
-    ) -> (Poll<Option<std::io::Result<Vec<u8>>>>, usize) {
+    ) -> (Poll<Option<Result<Vec<u8>, PowerSyncError>>>, usize) {
         if buf.is_empty() {
             // End of stream. This is an error if we were in the middle of reading an object.
             return if remaining.is_at_object_boundary() {
                 (Poll::Ready(None), 0)
             } else {
                 (
-                    Poll::Ready(Some(Err(Error::new(
-                        ErrorKind::UnexpectedEof,
-                        "stream ended in object",
-                    )))),
+                    Poll::Ready(Some(Err(RawPowerSyncError::SyncServiceResponseParsing {
+                        desc: "stream ended in object",
+                    }
+                    .into()))),
                     0,
                 )
             };
@@ -71,10 +70,10 @@ impl<R: AsyncBufRead> BsonObjects<R> {
                         let size = i32::from_le_bytes(target[0..4].try_into().unwrap());
                         if size < 5 {
                             // At the very least we need the 4 byte length and a zero terminator.
-                            Poll::Ready(Some(Err(Error::new(
-                                ErrorKind::InvalidData,
-                                "Invalid length header for BSON",
-                            ))))
+                            Poll::Ready(Some(Err(RawPowerSyncError::SyncServiceResponseParsing {
+                                desc: "Invalid length header for BSON",
+                            }
+                            .into())))
                         } else {
                             // Length is the total size of the frame, including the 4 byte length header
                             *remaining = RemainingBytes::ForObject(size as usize - 4);
@@ -95,26 +94,40 @@ impl<R: AsyncBufRead> BsonObjects<R> {
     }
 }
 
-impl<R: AsyncBufRead> Stream for BsonObjects<R> {
-    type Item = std::io::Result<Vec<u8>>;
+impl Stream for BsonObjects {
+    type Item = Result<Vec<u8>, PowerSyncError>;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut this = self.project();
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this: &mut BsonObjects = &mut *self;
+
         loop {
-            let buf = match ready!(this.reader.as_mut().poll_fill_buf(cx)) {
-                Ok(buf) => buf,
-                Err(e) => return Poll::Ready(Some(Err(e))),
-            };
+            // First, try to process a buffer we've consumed before.
+            while let Some(pending) = &mut this.current_event {
+                let (result, consumed_bytes) =
+                    Self::process_bytes(&mut this.buf, &mut this.remaining, pending);
+                if pending.len() == consumed_bytes {
+                    this.current_event = None;
+                } else {
+                    // current_event = current_event[consumed_bytes..]
+                    drop(pending.split_to(consumed_bytes));
+                }
 
-            let (result, consumed_bytes) = Self::process_bytes(this.buf, this.remaining, buf);
-            this.reader.as_mut().consume(consumed_bytes);
-
-            if result.is_pending() {
-                // We need more bytes to consume the object, so poll the reader again.
-                continue;
-            } else {
-                break result;
+                if result.is_ready() {
+                    return result;
+                }
             }
+
+            let buf = match ready!(this.stream.poll_next(cx)) {
+                Some(event) => match event {
+                    Ok(buf) => buf,
+                    Err(e) => return Poll::Ready(Some(Err(e))),
+                },
+                None => {
+                    // End of stream, which we represent by reading an empty buffer.
+                    Bytes::new()
+                }
+            };
+            this.current_event = Some(buf);
         }
     }
 }
@@ -157,14 +170,20 @@ impl Default for RemainingBytes {
 
 #[cfg(test)]
 mod test {
-    use futures_lite::{StreamExt, future};
+    use bytes::Bytes;
+    use futures_lite::{StreamExt, future, stream};
 
     use crate::util::bson_split::BsonObjects;
+
+    fn bson_objects(source: &[u8]) -> BsonObjects {
+        let bytes = Bytes::copy_from_slice(source);
+        BsonObjects::new(stream::once(Ok(bytes)).boxed())
+    }
 
     #[test]
     fn empty_source() {
         let source: [u8; 0] = [];
-        let mut source = BsonObjects::new(source.as_slice());
+        let mut source = bson_objects(source.as_slice());
 
         let next = future::block_on(async { source.next().await });
         assert!(next.is_none());
@@ -176,7 +195,7 @@ mod test {
             5, 0, 0, 0, 1, //
             6, 0, 0, 0, 0, 0,
         ];
-        let mut bson = BsonObjects::new(source.as_slice());
+        let mut bson = bson_objects(source.as_slice());
 
         let Some(Ok(bytes)) = future::block_on(async { bson.next().await }) else {
             panic!("Expected BSON object");
@@ -195,7 +214,7 @@ mod test {
     #[test]
     fn invalid_bson_size() {
         let source: [u8; _] = [3, 0, 0, 0];
-        let mut bson = BsonObjects::new(source.as_slice());
+        let mut bson = bson_objects(source.as_slice());
 
         let Some(Err(_)) = future::block_on(async { bson.next().await }) else {
             panic!("Expected error");
@@ -205,7 +224,7 @@ mod test {
     #[test]
     fn invalid_end_in_length() {
         let source: [u8; _] = [5, 0];
-        let mut bson = BsonObjects::new(source.as_slice());
+        let mut bson = bson_objects(source.as_slice());
 
         let Some(Err(_)) = future::block_on(async { bson.next().await }) else {
             panic!("Expected error");
@@ -215,7 +234,7 @@ mod test {
     #[test]
     fn invalid_end_in_object() {
         let source: [u8; _] = [6, 0, 0, 0, 0];
-        let mut bson = BsonObjects::new(source.as_slice());
+        let mut bson = bson_objects(source.as_slice());
 
         let Some(Err(_)) = future::block_on(async { bson.next().await }) else {
             panic!("Expected error");

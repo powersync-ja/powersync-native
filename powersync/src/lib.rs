@@ -16,6 +16,7 @@ pub use sync::options::SyncOptions;
 pub use sync::status::SyncStatusData;
 pub use sync::stream_priority::StreamPriority;
 pub mod error;
+pub mod http;
 
 pub mod schema {
     pub use super::db::schema::*;

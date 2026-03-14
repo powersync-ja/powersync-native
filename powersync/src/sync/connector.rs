@@ -24,17 +24,16 @@ pub struct PowerSyncCredentials {
 
 impl PowerSyncCredentials {
     /// Parses the [Self::endpoint] into a URI.
-    pub(crate) fn parsed_endpoint(&self) -> Result<Url, PowerSyncError> {
+    pub(crate) fn parsed_endpoint(&self, endpoint: &str) -> Result<Url, PowerSyncError> {
         let url = Url::parse(&self.endpoint)
             .map_err(|e| RawPowerSyncError::InvalidPowerSyncEndpoint { inner: e })?;
-        if url.cannot_be_a_base() {
-            return Err(PowerSyncError::argument_error(format!(
+
+        url.join(endpoint).map_err(|_| {
+            return PowerSyncError::argument_error(format!(
                 "URL {} must be a valid base URL",
                 self.endpoint
-            )));
-        }
-
-        Ok(url)
+            ));
+        })
     }
 }
 
@@ -47,7 +46,7 @@ mod test {
             token: "".to_string(),
             endpoint: endpoint.to_string(),
         }
-        .parsed_endpoint()
+        .parsed_endpoint("")
         .is_ok()
     }
 

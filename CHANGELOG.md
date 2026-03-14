@@ -1,3 +1,8 @@
+## 0.0.5
+
+- __Breaking__: Remove the `http-client` crate dependency. Instead, implement the `HttpClient` crate
+  from the `powersync` crate directly.
+
 ## 0.0.4
 
 - Update PowerSync core extension to version 0.4.11.
