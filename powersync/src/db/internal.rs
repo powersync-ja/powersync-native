@@ -125,7 +125,7 @@ impl InnerPowerSyncState {
     pub async fn sync_iteration_delay(&self) {
         let delay = {
             let guard = self.retry_delay.lock().unwrap();
-            guard.clone()
+            *guard
         };
 
         if let Some(delay) = delay {

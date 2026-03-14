@@ -23,10 +23,10 @@ impl Stream for LineSplitter {
     type Item = Result<String, PowerSyncError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this: &mut LineSplitter = &mut *self;
+        let this: &mut LineSplitter = &mut self;
 
         loop {
-            while let Some(idx) = this.unfinished_line.find("\n") {
+            if let Some(idx) = this.unfinished_line.find("\n") {
                 // Split into line including the \n, and the rest
                 let remainder = this.unfinished_line.split_off(idx + 1);
                 let mut completed_line = mem::replace(&mut this.unfinished_line, remainder);
@@ -56,7 +56,7 @@ impl Stream for LineSplitter {
                 },
             };
 
-            let as_str = match str::from_utf8(&*buffer) {
+            let as_str = match str::from_utf8(&buffer) {
                 Ok(str) => str,
                 Err(_) => {
                     return Poll::Ready(Some(Err(RawPowerSyncError::SyncServiceResponseParsing {

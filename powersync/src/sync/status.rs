@@ -50,17 +50,12 @@ impl SyncStatus {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub enum UploadStatus {
+    #[default]
     Idle,
     Uploading,
     Error(PowerSyncError),
-}
-
-impl Default for UploadStatus {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 #[derive(Default)]

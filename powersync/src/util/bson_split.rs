@@ -1,4 +1,4 @@
-use crate::error::{PowerSyncError, RawPowerSyncError};
+use crate::error::{RawPowerSyncError, Result};
 use crate::http::ResponseStream;
 use bytes::Bytes;
 use futures_lite::{Stream, StreamExt, ready};
@@ -32,7 +32,7 @@ impl BsonObjects {
         target: &mut Vec<u8>,
         remaining: &mut RemainingBytes,
         mut buf: &[u8],
-    ) -> (Poll<Option<Result<Vec<u8>, PowerSyncError>>>, usize) {
+    ) -> (Poll<Option<Result<Vec<u8>>>>, usize) {
         if buf.is_empty() {
             // End of stream. This is an error if we were in the middle of reading an object.
             return if remaining.is_at_object_boundary() {
@@ -95,10 +95,10 @@ impl BsonObjects {
 }
 
 impl Stream for BsonObjects {
-    type Item = Result<Vec<u8>, PowerSyncError>;
+    type Item = Result<Vec<u8>>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this: &mut BsonObjects = &mut *self;
+        let this: &mut BsonObjects = &mut self;
 
         loop {
             // First, try to process a buffer we've consumed before.

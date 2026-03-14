@@ -8,6 +8,8 @@ use rusqlite::Error as SqliteError;
 use rusqlite::types::FromSqlError;
 use thiserror::Error;
 
+pub type Result<T> = std::result::Result<T, PowerSyncError>;
+
 /// A [RawPowerSyncError], but boxed.
 ///
 /// We allocate errors in boxes to avoid large [Result] types (given the large size of the

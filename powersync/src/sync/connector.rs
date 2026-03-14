@@ -29,10 +29,10 @@ impl PowerSyncCredentials {
             .map_err(|e| RawPowerSyncError::InvalidPowerSyncEndpoint { inner: e })?;
 
         url.join(endpoint).map_err(|_| {
-            return PowerSyncError::argument_error(format!(
+            PowerSyncError::argument_error(format!(
                 "URL {} must be a valid base URL",
                 self.endpoint
-            ));
+            ))
         })
     }
 }
