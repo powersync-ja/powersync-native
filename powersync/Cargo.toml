@@ -29,7 +29,6 @@ async-oneshot = "0.5.9"
 atomic_enum = "0.3.0"
 event-listener = "5.4.1"
 futures-lite = "2.6.1"
-http = "1.4.0"
 reqwest = { version = "0.13.2", optional = true, features = ["stream"] }
 bytes = "1"
 log = "0.4.28"

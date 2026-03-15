@@ -2,9 +2,9 @@ use crate::error::PowerSyncError;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_lite::{Stream, StreamExt};
-use http::{HeaderMap, Method, Response};
 #[cfg(feature = "reqwest")]
 use reqwest::Client as ReqwestClient;
+use std::borrow::Cow;
 use std::pin::Pin;
 use std::sync::Arc;
 use url::Url;
@@ -19,16 +19,29 @@ pub trait HttpClient: Send + Sync + 'static {
     /// Sends an HTTP request.
     ///
     /// Implementations are required to support streamed responses.
-    async fn send(&self, req: Request) -> Result<Response<ResponseBody>, PowerSyncError>;
+    async fn send(&self, req: Request) -> Result<Response, PowerSyncError>;
 }
 
+/// A request sent by the PowerSync SDK.
 pub struct Request {
-    pub method: Method,
+    pub method: &'static str,
     pub url: Url,
-    pub headers: HeaderMap,
+    pub headers: Vec<(&'static str, Cow<'static, str>)>,
     /// This crate doesn't use streaming request bodies, so requests will contain the full request
     /// body as a byte vector.
     pub body: Option<Vec<u8>>,
+
+    // Ensure that requests can only be created within the PowerSync SDK.
+    pub(crate) _internal: (),
+}
+
+/// Information about http responses used by the PowerSync SDK.
+pub struct Response {
+    /// The HTTP status code of the response.
+    pub status: u16,
+    pub content_type: Option<String>,
+    /// The streamed response body.
+    pub body: ResponseBody,
 }
 
 pub type ResponseStream =
@@ -40,7 +53,7 @@ pub struct ResponseBody {
 }
 
 impl ResponseBody {
-    pub async fn read_fully(mut self) -> Result<Vec<u8>, PowerSyncError> {
+    pub(crate) async fn read_fully(mut self) -> Result<Vec<u8>, PowerSyncError> {
         let mut body = match self.length {
             None => Vec::new(),
             Some(length) => Vec::with_capacity(length as usize),
@@ -57,12 +70,18 @@ impl ResponseBody {
 #[cfg(feature = "reqwest")]
 #[async_trait]
 impl HttpClient for ReqwestClient {
-    async fn send(&self, req: Request) -> Result<Response<ResponseBody>, PowerSyncError> {
+    async fn send(&self, req: Request) -> Result<Response, PowerSyncError> {
         use crate::error::RawPowerSyncError;
+        use std::str::FromStr;
 
         let req = {
-            let mut wrapped = reqwest::Request::new(req.method, req.url);
-            *wrapped.headers_mut() = req.headers;
+            let mut wrapped =
+                reqwest::Request::new(reqwest::Method::from_str(req.method).unwrap(), req.url);
+            for (key, value) in req.headers {
+                wrapped
+                    .headers_mut()
+                    .insert(key, value.as_ref().try_into().unwrap());
+            }
             if let Some(body) = req.body {
                 *wrapped.body_mut() = Some(reqwest::Body::from(body));
             }
@@ -74,11 +93,13 @@ impl HttpClient for ReqwestClient {
             .execute(req)
             .await
             .map_err(|e| RawPowerSyncError::from(e))?;
-        let mut builder = Response::builder().status(response.status());
-        if let Some(headers) = builder.headers_mut() {
-            *headers = std::mem::take(response.headers_mut());
-        }
 
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.to_string());
         let content_length = response.content_length();
         let stream = response
             .bytes_stream()
@@ -89,15 +110,17 @@ impl HttpClient for ReqwestClient {
             length: content_length,
         };
 
-        builder
-            .body(body)
-            .map_err(|e| RawPowerSyncError::Http { inner: e }.into())
+        Ok(Response {
+            status,
+            content_type,
+            body,
+        })
     }
 }
 
 #[async_trait]
 impl<C: HttpClient> HttpClient for Arc<C> {
-    async fn send(&self, req: Request) -> Result<Response<ResponseBody>, PowerSyncError> {
+    async fn send(&self, req: Request) -> Result<Response, PowerSyncError> {
         let inner = Arc::as_ref(self);
         inner.send(req).await
     }

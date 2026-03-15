@@ -2,9 +2,8 @@ use crate::sync_line::{Checkpoint, DataLine, OplogEntry, SyncLine};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_lite::{Stream, StreamExt, ready, stream};
-use http::{Response, StatusCode};
 use pin_project_lite::pin_project;
-use powersync::http::{HttpClient, Request, ResponseBody};
+use powersync::http::{HttpClient, Request, Response, ResponseBody};
 use powersync::{BackendConnector, PowerSyncCredentials, StreamPriority, error::PowerSyncError};
 use serde::Serialize;
 use serde_json::json;
@@ -53,7 +52,7 @@ impl MockSyncService {
 
         #[async_trait]
         impl HttpClient for MockClient {
-            async fn send(&self, req: Request) -> Result<Response<ResponseBody>, PowerSyncError> {
+            async fn send(&self, req: Request) -> Result<Response, PowerSyncError> {
                 match req.url.path() {
                     "/sync/stream" => Ok(self.service.sync_stream(req).await),
                     "/write-checkpoint2.json" => {
@@ -67,18 +66,19 @@ impl MockSyncService {
         MockClient { service: self }
     }
 
-    async fn sync_stream(&self, req: Request) -> Response<ResponseBody> {
+    async fn sync_stream(&self, req: Request) -> Response {
         let body: serde_json::Value =
             serde_json::from_slice(&req.body.unwrap_or_default()).unwrap();
 
         let (send, recv) = async_channel::bounded(1);
-        let response = Response::builder()
-            .status(StatusCode::OK)
-            .body(ResponseBody {
+        let response = Response {
+            status: 200,
+            body: ResponseBody {
                 reader: MockSyncLinesResponse { receive: recv }.boxed(),
                 length: None,
-            })
-            .unwrap();
+            },
+            content_type: Some("application/json".to_string()),
+        };
 
         self.send_requests
             .send(PendingSyncResponse {
@@ -91,30 +91,29 @@ impl MockSyncService {
         response
     }
 
-    fn generate_write_checkpoint_response(&self) -> Response<ResponseBody> {
+    fn generate_write_checkpoint_response(&self) -> Response {
         let data = { self.write_checkpoints.lock().unwrap()() };
         let data = Bytes::from(serde_json::to_vec(&data).unwrap());
 
-        Response::builder()
-            .status(StatusCode::OK)
-            .header("Content-Type", "application/json")
-            .body(ResponseBody {
+        Response {
+            status: 200,
+            content_type: Some("application/json".to_string()),
+            body: ResponseBody {
                 length: Some(data.len() as u64),
                 reader: stream::once(Ok(data)).boxed(),
-            })
-            .unwrap()
+            },
+        }
     }
 
-    fn generate_bad_request() -> Response<ResponseBody> {
-        let body = ResponseBody {
-            reader: stream::empty().boxed(),
-            length: Some(0),
-        };
-
-        Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .body(body)
-            .unwrap()
+    fn generate_bad_request() -> Response {
+        Response {
+            status: 400,
+            content_type: None,
+            body: ResponseBody {
+                reader: stream::empty().boxed(),
+                length: Some(0),
+            },
+        }
     }
 }
 

@@ -3,7 +3,6 @@ use std::io;
 use std::sync::Arc;
 use std::{borrow::Cow, fmt::Display};
 
-use http::StatusCode;
 use rusqlite::Error as SqliteError;
 use rusqlite::types::FromSqlError;
 use thiserror::Error;
@@ -34,12 +33,6 @@ impl From<SqliteError> for PowerSyncError {
 impl From<serde_json::Error> for PowerSyncError {
     fn from(value: serde_json::Error) -> Self {
         RawPowerSyncError::JsonConversion { inner: value }.into()
-    }
-}
-
-impl From<http::Error> for PowerSyncError {
-    fn from(value: http::Error) -> Self {
-        RawPowerSyncError::Http { inner: value }.into()
     }
 }
 
@@ -96,9 +89,6 @@ pub(crate) enum RawPowerSyncError {
     /// Used when a backend connector returns an invalid URI as a service URL.
     #[error("Invalid PowerSync endpoint: {inner}")]
     InvalidPowerSyncEndpoint { inner: url::ParseError },
-    /// HTTP errors while downloading sync lines.
-    #[error("HTTP error: {inner}")]
-    Http { inner: http::Error },
     /// A generic IO error that occurred in the SDK.
     #[error("IO error: {inner}")]
     IO {
@@ -114,5 +104,5 @@ pub(crate) enum RawPowerSyncError {
     #[error("The PowerSync service did not accept credentials returned by connector")]
     InvalidCredentials,
     #[error("Unexpected HTTP status code from PowerSync service: {code}")]
-    UnexpectedStatusCode { code: StatusCode },
+    UnexpectedStatusCode { code: u16 },
 }
