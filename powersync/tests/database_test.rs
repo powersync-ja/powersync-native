@@ -2,9 +2,12 @@ use std::sync::Arc;
 
 use async_oneshot::oneshot;
 use futures_lite::{StreamExt, future};
+use powersync::PowerSyncDatabase;
 use powersync::error::PowerSyncError;
+use powersync::schema::{Column, Schema, Table};
 use powersync_test_utils::{DatabaseTest, UserRow, execute, query_all};
 use rusqlite::params;
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 #[test]
@@ -230,5 +233,33 @@ fn test_watch_statement() {
             stream.next().await.unwrap().unwrap(),
             json!(["Test", "Test2", "Test3", "Test4"])
         );
+    });
+}
+
+#[test]
+fn test_external_schema() {
+    let test = DatabaseTest::new();
+    let schema = {
+        let mut original = Schema::default();
+        original
+            .tables
+            .push(Table::create("users", vec![Column::text("name")], |_| {}));
+
+        let serialized = serde_json::to_string(&original).unwrap();
+        let custom: Box<RawValue> = serde_json::from_str(&serialized).unwrap();
+        custom
+    };
+
+    // Passing a pre-serialized schema should still work correctly.
+    let db = PowerSyncDatabase::new(test.in_memory(), schema.as_ref());
+    future::block_on(execute(
+        &db,
+        "INSERT INTO users (id, name) VALUES (uuid(), ?)",
+        params!["User"],
+    ));
+
+    future::block_on(async {
+        let rows = query_all(&db, "SELECT name FROM users", params![]).await;
+        assert_eq!(rows, json!([{"name": "User"}]));
     });
 }

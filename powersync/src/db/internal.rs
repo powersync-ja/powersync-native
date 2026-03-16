@@ -9,13 +9,13 @@ use std::{
     task::{Context, Poll},
 };
 
+use crate::schema::SchemaOrCustom;
 use crate::{
     db::{
         core_extension::CoreExtensionVersion, pool::LeasedConnection, streams::SyncStreamTracker,
     },
     env::PowerSyncEnvironment,
     error::PowerSyncError,
-    schema::Schema,
     sync::{MAX_OP_ID, coordinator::SyncCoordinator, status::SyncStatus, status::SyncStatusData},
     util::SharedFuture,
 };
@@ -28,7 +28,7 @@ pub struct InnerPowerSyncState {
     /// The schema passed to the database.
     ///
     /// This is forwarded to the sync client for raw tables.
-    pub schema: Arc<Schema>,
+    pub schema: Arc<SchemaOrCustom>,
     /// A container for the current sync status.
     pub status: SyncStatus,
     /// A collection of currently-referenced sync stream subscriptions.
@@ -41,7 +41,11 @@ pub struct InnerPowerSyncState {
 }
 
 impl InnerPowerSyncState {
-    pub fn new(env: PowerSyncEnvironment, schema: Schema, sync: &Arc<SyncCoordinator>) -> Self {
+    pub fn new(
+        env: PowerSyncEnvironment,
+        schema: SchemaOrCustom,
+        sync: &Arc<SyncCoordinator>,
+    ) -> Self {
         Self {
             env,
             did_initialize: SharedFuture::new(),
@@ -73,7 +77,9 @@ impl InnerPowerSyncState {
     }
 
     fn update_schema_internal(&self, conn: &Connection) -> Result<(), PowerSyncError> {
-        self.schema.validate()?;
+        if let SchemaOrCustom::Schema(schema) = self.schema.as_ref() {
+            schema.validate()?;
+        };
 
         let serialized_schema = serde_json::to_string(&self.schema)?;
         conn.prepare("SELECT powersync_replace_schema(?)")?

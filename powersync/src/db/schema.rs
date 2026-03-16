@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 use crate::error::PowerSyncError;
+use crate::util::SerializedJsonObject;
 
 type SchemaString = Cow<'static, str>;
 
@@ -499,6 +500,30 @@ impl TrackPreviousValues {
             column_filter: None,
             only_when_changed: false,
         }
+    }
+}
+
+#[derive(Serialize, Debug)]
+#[serde(untagged)]
+pub enum SchemaOrCustom {
+    /// A schema created in Rust.
+    Schema(Schema),
+    /// A pre-serialized schema we just forward to the core extension.
+    Custom(Box<SerializedJsonObject>),
+}
+
+impl From<Schema> for SchemaOrCustom {
+    fn from(value: Schema) -> Self {
+        Self::Schema(value)
+    }
+}
+
+impl From<&serde_json::value::RawValue> for SchemaOrCustom {
+    fn from(value: &serde_json::value::RawValue) -> Self {
+        Self::Custom(unsafe {
+            // Safety: The core extension will report an error if this isn't a JSON object.
+            SerializedJsonObject::from_owned_value(value.to_owned())
+        })
     }
 }
 

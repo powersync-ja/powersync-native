@@ -4,6 +4,7 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 use crate::db::async_support::AsyncDatabaseTasks;
+use crate::schema::SchemaOrCustom;
 use crate::sync::coordinator::SyncCoordinator;
 use crate::{
     CrudTransaction, SyncOptions,
@@ -13,7 +14,6 @@ use crate::{
     },
     env::PowerSyncEnvironment,
     error::PowerSyncError,
-    schema::Schema,
     sync::{download::DownloadActor, status::SyncStatusData, upload::UploadActor},
 };
 use futures_lite::stream::{once, once_future};
@@ -47,11 +47,18 @@ impl PowerSyncDatabase {
     const PS_DATA_PREFIX: &'static str = "ps_data__";
     const PS_DATA_LOCAL_PREFIX: &'static str = "ps_data_local__";
 
-    pub fn new(env: PowerSyncEnvironment, schema: Schema) -> Self {
+    /// Creates a new PowerSync database using the connection pool and HTTP client from the given
+    /// [PowerSyncEnvironment].
+    ///
+    /// On first use, the database will instantiate a PowerSync schema. Typically, a [Schema]
+    /// instance would be passed for schemas. For cases where the schema is defined externally as a
+    /// JSON object understood by the PowerSync SQLite core extension, it can also be passed as a
+    /// [serde_json::value::RawValue] reference.
+    pub fn new(env: PowerSyncEnvironment, schema: impl Into<SchemaOrCustom>) -> Self {
         let coordinator = Arc::new(SyncCoordinator::default());
 
         Self {
-            inner: Arc::new(InnerPowerSyncState::new(env, schema, &coordinator)),
+            inner: Arc::new(InnerPowerSyncState::new(env, schema.into(), &coordinator)),
             sync: coordinator,
         }
     }

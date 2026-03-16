@@ -9,11 +9,11 @@ use rusqlite::{
 use serde::Serialize;
 use serde_json::value::RawValue;
 
+use crate::schema::SchemaOrCustom;
 use crate::{
     SyncOptions,
     db::internal::InnerPowerSyncState,
     error::PowerSyncError,
-    schema::Schema,
     sync::{
         download::http::sync_stream,
         instruction::{CloseSyncStream, Instruction, LogSeverity},
@@ -226,7 +226,7 @@ impl ToSql for PowerSyncControlArgument {
 #[derive(Debug, Serialize)]
 pub struct StartDownloadIteration {
     pub parameters: serde_json::Value,
-    pub schema: Arc<Schema>,
+    pub schema: Arc<SchemaOrCustom>,
     pub include_defaults: bool,
     pub active_streams: Vec<StreamKey>,
 }

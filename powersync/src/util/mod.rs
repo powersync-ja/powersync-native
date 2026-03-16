@@ -19,7 +19,7 @@ pub struct SerializedJsonObject {
 
 impl SerializedJsonObject {
     /// Safety: This must only be called for raw values that are known to be objects.
-    unsafe fn from_owned_value(raw: Box<RawValue>) -> Box<Self> {
+    pub unsafe fn from_owned_value(raw: Box<RawValue>) -> Box<Self> {
         unsafe {
             // Safety: Identical representation.
             std::mem::transmute(raw)

@@ -330,7 +330,7 @@ fn raw_table_crud_trigger() {
         let serialized_table = serde_json::to_string(&schema.raw_tables[0]).unwrap();
 
         let test = DatabaseTest::new();
-        let db = PowerSyncDatabase::new(test.in_memory(), Default::default());
+        let db = PowerSyncDatabase::new(test.in_memory(), Schema::default());
 
         {
             let mut writer = db.writer().await.unwrap();
