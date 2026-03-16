@@ -1,5 +1,3 @@
-use std::{str::FromStr, sync::Arc};
-
 use async_trait::async_trait;
 use futures_lite::StreamExt;
 use log::warn;
@@ -10,7 +8,7 @@ use powersync::{
     error::PowerSyncError,
     schema::{Column, Schema, Table},
 };
-use reqwest::{Method, Request, StatusCode};
+use reqwest::StatusCode;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};

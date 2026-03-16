@@ -23,6 +23,7 @@ pub trait HttpClient: Send + Sync + 'static {
 }
 
 /// A request sent by the PowerSync SDK.
+#[non_exhaustive]
 pub struct Request {
     pub method: &'static str,
     pub url: Url,
@@ -30,9 +31,6 @@ pub struct Request {
     /// This crate doesn't use streaming request bodies, so requests will contain the full request
     /// body as a byte vector.
     pub body: Option<Vec<u8>>,
-
-    // Ensure that requests can only be created within the PowerSync SDK.
-    pub(crate) _internal: (),
 }
 
 /// Information about http responses used by the PowerSync SDK.
@@ -89,11 +87,7 @@ impl HttpClient for ReqwestClient {
             wrapped
         };
 
-        let mut response = self
-            .execute(req)
-            .await
-            .map_err(|e| RawPowerSyncError::from(e))?;
-
+        let response = self.execute(req).await.map_err(RawPowerSyncError::from)?;
         let status = response.status().as_u16();
         let content_type = response
             .headers()

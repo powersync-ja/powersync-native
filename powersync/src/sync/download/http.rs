@@ -36,7 +36,6 @@ pub fn sync_stream(
                 headers
             },
             body: Some(request_body.into_bytes()),
-            _internal: (),
         };
 
         let response = db.env.client.send(request).await?;
@@ -75,7 +74,6 @@ pub async fn write_checkpoint(
             headers
         },
         body: None,
-        _internal: (),
     };
 
     let response = db.env.client.send(request).await?;
