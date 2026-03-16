@@ -12,8 +12,8 @@ use url::Url;
 /// An asynchronous HTTP client used internally by the PowerSync SDK to connect to a PowerSync
 /// service.
 ///
-/// An implementation of this is required when constructing PowerSync databases. This crate provides
-/// two implementations:
+/// An implementation of this is required when constructing PowerSync databases. When the `reqwest`
+/// feature is enabled, this crate provides an implementation for `reqwest::Client`.
 #[async_trait]
 pub trait HttpClient: Send + Sync + 'static {
     /// Sends an HTTP request.

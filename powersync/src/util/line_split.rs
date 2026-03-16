@@ -89,4 +89,23 @@ mod test {
         let next = future::block_on(async { lines.try_next().await }).unwrap();
         assert!(next.is_none());
     }
+
+    #[test]
+    fn splits_lines_separate_events() {
+        let mut lines = LineSplitter::from(
+            stream::iter(vec![
+                Ok(Bytes::from_static(b"hel")),
+                Ok(Bytes::from_static(b"lo\nwor")),
+                Ok(Bytes::from_static(b"ld")),
+            ])
+            .boxed(),
+        );
+
+        let next = future::block_on(async { lines.try_next().await }).unwrap();
+        assert_eq!(next.unwrap(), "hello");
+        let next = future::block_on(async { lines.try_next().await }).unwrap();
+        assert_eq!(next.unwrap(), "world");
+        let next = future::block_on(async { lines.try_next().await }).unwrap();
+        assert!(next.is_none());
+    }
 }
