@@ -7,7 +7,18 @@ use std::task::{Context, Poll, ready};
 
 pub struct LineSplitter {
     stream: Option<ResponseStream>,
-    unfinished_line: String,
+    unfinished_line: Vec<u8>,
+}
+
+impl LineSplitter {
+    fn emit_line(line: Vec<u8>) -> Poll<Option<Result<String, PowerSyncError>>> {
+        Poll::Ready(Some(String::from_utf8(line).map_err(|_| {
+            RawPowerSyncError::SyncServiceResponseParsing {
+                desc: "Expected text lines, but got utf-8 decoding error.",
+            }
+            .into()
+        })))
+    }
 }
 
 impl From<ResponseStream> for LineSplitter {
@@ -26,14 +37,14 @@ impl Stream for LineSplitter {
         let this: &mut LineSplitter = &mut self;
 
         loop {
-            if let Some(idx) = this.unfinished_line.find("\n") {
+            if let Some(idx) = this.unfinished_line.iter().position(|b| *b == b'\n') {
                 // Split into line including the \n, and the rest
                 let remainder = this.unfinished_line.split_off(idx + 1);
                 let mut completed_line = mem::replace(&mut this.unfinished_line, remainder);
                 // Remove \n from the completed line.
                 completed_line.pop();
 
-                return Poll::Ready(Some(Ok(completed_line)));
+                return Self::emit_line(completed_line);
             }
 
             let Some(stream) = &mut this.stream else {
@@ -47,7 +58,7 @@ impl Stream for LineSplitter {
                         None
                     } else {
                         // End of stream, but we had a pending line. Emit that now.
-                        Some(Ok(mem::take(&mut this.unfinished_line)))
+                        return Self::emit_line(mem::take(&mut this.unfinished_line));
                     });
                 }
                 Some(event) => match event {
@@ -56,17 +67,7 @@ impl Stream for LineSplitter {
                 },
             };
 
-            let as_str = match str::from_utf8(&buffer) {
-                Ok(str) => str,
-                Err(_) => {
-                    return Poll::Ready(Some(Err(RawPowerSyncError::SyncServiceResponseParsing {
-                        desc: "Expected text lines, but got utf-8 decoding error.",
-                    }
-                    .into())));
-                }
-            };
-
-            this.unfinished_line.push_str(as_str);
+            this.unfinished_line.extend(&buffer);
         }
     }
 }
@@ -86,6 +87,24 @@ mod test {
         assert_eq!(next.unwrap(), "hello");
         let next = future::block_on(async { lines.try_next().await }).unwrap();
         assert_eq!(next.unwrap(), "world");
+        let next = future::block_on(async { lines.try_next().await }).unwrap();
+        assert!(next.is_none());
+    }
+
+    #[test]
+    fn utf8_split_across_chunks() {
+        // "é" is two bytes: 0xC3 0xA9, split across chunk boundary. This verifies we don't try to
+        // decode individual source chunks.
+        let mut lines = LineSplitter::from(
+            stream::iter(vec![
+                Ok(Bytes::from_static(b"caf\xc3")),
+                Ok(Bytes::from_static(b"\xa9\n")),
+            ])
+            .boxed(),
+        );
+
+        let next = future::block_on(async { lines.try_next().await }).unwrap();
+        assert_eq!(next.unwrap(), "café");
         let next = future::block_on(async { lines.try_next().await }).unwrap();
         assert!(next.is_none());
     }

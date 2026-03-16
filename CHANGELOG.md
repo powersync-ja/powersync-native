@@ -1,7 +1,8 @@
 ## 0.0.5
 
-- __Breaking__: Remove the `http-client` crate dependency. Instead, implement the `HttpClient` crate
+- __Breaking__: Remove the `http-client` crate dependency. Instead, implement the `HttpClient` trait
   from the `powersync` crate directly.
+- __Breaking__: The `Timer` passed to `PowerSyncEnvironment` is now a `&'static` reference instead of a `Box`.
 
 ## 0.0.4
 

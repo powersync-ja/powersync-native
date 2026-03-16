@@ -73,12 +73,19 @@ impl HttpClient for ReqwestClient {
         use std::str::FromStr;
 
         let req = {
-            let mut wrapped =
-                reqwest::Request::new(reqwest::Method::from_str(req.method).unwrap(), req.url);
+            let mut wrapped = reqwest::Request::new(
+                reqwest::Method::from_str(req.method)
+                    .map_err(|_| PowerSyncError::argument_error("Invalid HTTP verb"))?,
+                req.url,
+            );
             for (key, value) in req.headers {
-                wrapped
-                    .headers_mut()
-                    .insert(key, value.as_ref().try_into().unwrap());
+                wrapped.headers_mut().insert(
+                    key,
+                    value
+                        .as_ref()
+                        .try_into()
+                        .map_err(|_| PowerSyncError::argument_error("Invalid header value"))?,
+                );
             }
             if let Some(body) = req.body {
                 *wrapped.body_mut() = Some(reqwest::Body::from(body));
