@@ -16,8 +16,8 @@ _[PowerSync](https://www.powersync.com) is a sync engine for building local-firs
 PowerSync is implemented over local SQLite databases. The main entrypoint for this library, `PowerSyncDatabase`,
 requires three external dependencies to be provided:
 
-1. An HTTP client implementation from the `http-client` crate.
-   - The `async-h1` implementation is known not to work with PowerSync, we recommend the `IsahcClient` instead.
+1. An HTTP client implementation.
+   - PowerSync accepts `reqwest::Client` instances when the `reqwest` feature is enabled.
 2. A `ConnectionPool` of SQLite connections.
    - Create one with `ConnectionPool::open(path)`.
    - For in-memory databases, use `ConnectionPool::single_connection()`.
