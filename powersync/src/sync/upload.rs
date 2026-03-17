@@ -7,6 +7,7 @@ use futures_lite::{
 use log::{debug, info, warn};
 use rusqlite::{Connection, params};
 
+use crate::db::watch::ListenerConfiguration;
 use crate::sync::coordinator::SyncCoordinator;
 use crate::{
     BackendConnector,
@@ -54,10 +55,14 @@ impl UploadActor {
         let mut tables = HashSet::new();
         tables.insert("ps_crud".to_string());
 
-        let stream = db.env.pool.update_notifiers().listen(false, tables);
+        let stream = db
+            .env
+            .pool
+            .update_notifiers()
+            .listen(ListenerConfiguration::if_matches(tables, false));
         ConnectedUploadActor {
             connector,
-            crud_stream: stream.boxed(),
+            crud_stream: stream.map(|_| ()).boxed(),
         }
     }
 

@@ -4,6 +4,7 @@ use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
 use crate::db::async_support::AsyncDatabaseTasks;
+use crate::db::watch::ListenerConfiguration;
 use crate::schema::SchemaOrCustom;
 use crate::sync::coordinator::SyncCoordinator;
 use crate::{
@@ -103,8 +104,7 @@ impl PowerSyncDatabase {
         emit_initially: bool,
         tables: Tables,
     ) -> impl Stream<Item = ()> + 'static {
-        self.inner.env.pool.update_notifiers().listen(
-            emit_initially,
+        let config = ListenerConfiguration::if_matches(
             tables
                 .into_iter()
                 .flat_map(|s| {
@@ -117,7 +117,24 @@ impl PowerSyncDatabase {
                     ]
                 })
                 .collect(),
-        )
+            emit_initially,
+        );
+
+        self.inner
+            .env
+            .pool
+            .update_notifiers()
+            .listen(config)
+            .map(|_| ())
+    }
+
+    /// Returns a stream emitting an item whenever any table in the local database is written to.
+    pub fn watch_all_updates(&self) -> impl Stream<Item = HashSet<String>> + 'static {
+        self.inner
+            .env
+            .pool
+            .update_notifiers()
+            .listen(ListenerConfiguration::all())
     }
 
     /// Returns an asynchronous [Stream] emitting snapshots of a `SELECT` statement every time
