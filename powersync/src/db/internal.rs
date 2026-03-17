@@ -118,12 +118,12 @@ impl InnerPowerSyncState {
         Ok(())
     }
 
-    pub async fn reader(&self) -> Result<impl LeasedConnection, PowerSyncError> {
+    pub async fn reader(&self) -> Result<LeasedConnection, PowerSyncError> {
         self.initialize().await?;
         Ok(self.env.pool.reader().await)
     }
 
-    pub async fn writer(&self) -> Result<impl LeasedConnection, PowerSyncError> {
+    pub async fn writer(&self) -> Result<LeasedConnection, PowerSyncError> {
         self.initialize().await?;
         Ok(self.env.pool.writer().await)
     }

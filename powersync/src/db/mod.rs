@@ -286,12 +286,12 @@ impl PowerSyncDatabase {
     }
 
     /// Obtains a [LeasedConnection] that can be used to run read-only queries on this database.
-    pub async fn reader(&self) -> Result<impl LeasedConnection, PowerSyncError> {
+    pub async fn reader(&self) -> Result<LeasedConnection, PowerSyncError> {
         self.inner.reader().await
     }
 
     /// Obtains a [LeasedConnection] allowing reading and writing queries.
-    pub async fn writer(&self) -> Result<impl LeasedConnection, PowerSyncError> {
+    pub async fn writer(&self) -> Result<LeasedConnection, PowerSyncError> {
         self.inner.writer().await
     }
 
