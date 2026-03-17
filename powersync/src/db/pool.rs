@@ -7,7 +7,7 @@ use std::{
 };
 
 use async_channel::{Receiver, Sender};
-use async_lock::{Mutex, MutexGuard};
+use async_lock::{Mutex, MutexGuardArc};
 use rusqlite::{Connection, Error, params};
 use serde::Deserialize;
 
@@ -21,14 +21,14 @@ pub struct ConnectionPool {
 }
 
 impl ConnectionPool {
-    fn prepare_writer(connection: Connection) -> Mutex<Connection> {
+    fn prepare_writer(connection: Connection) -> Arc<Mutex<Connection>> {
         connection
             .prepare("SELECT powersync_update_hooks('install');")
             .expect("should prepare statement for update hooks")
             .query_one(params![], |_| Ok(()))
             .expect("could not install update hook");
 
-        Mutex::new(connection)
+        Arc::new(Mutex::new(connection))
     }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, PowerSyncError> {
@@ -89,23 +89,27 @@ impl ConnectionPool {
         &self.state.table_notifiers
     }
 
-    fn take_connection_sync(&'_ self, writer: bool) -> LeasedConnectionImpl<'_> {
+    fn take_connection_sync(&'_ self, writer: bool) -> LeasedConnection {
         if !writer && let Some(readers) = &self.state.readers {
             let reader = readers
                 .take_reader
                 .recv_blocking()
                 .expect("should receive connection");
 
-            LeasedConnectionImpl::Reader(LeasedReader {
-                connection: MaybeUninit::new(reader),
-                release: &readers.release_reader,
-            })
+            LeasedConnection {
+                inner: OwnedConnectionLease::Reader {
+                    connection: MaybeUninit::new(reader),
+                    pool: self.clone(),
+                },
+            }
         } else {
-            let guard = self.state.writer.lock_blocking();
-            LeasedConnectionImpl::Writer(LeasedWriter {
-                connection: guard,
-                pool: self,
-            })
+            let guard = self.state.writer.lock_arc_blocking();
+            LeasedConnection {
+                inner: OwnedConnectionLease::Writer {
+                    connection: guard,
+                    pool: self.clone(),
+                },
+            }
         }
     }
 
@@ -126,7 +130,7 @@ impl ConnectionPool {
         Ok(updates)
     }
 
-    async fn take_connection_async(&'_ self, writer: bool) -> LeasedConnectionImpl<'_> {
+    async fn take_connection_async(&self, writer: bool) -> LeasedConnection {
         if !writer && let Some(readers) = &self.state.readers {
             let reader = readers
                 .take_reader
@@ -134,40 +138,39 @@ impl ConnectionPool {
                 .await
                 .expect("should receive connection");
 
-            LeasedConnectionImpl::Reader(LeasedReader {
-                connection: MaybeUninit::new(reader),
-                release: &readers.release_reader,
-            })
+            LeasedConnection {
+                inner: OwnedConnectionLease::Reader {
+                    connection: MaybeUninit::new(reader),
+                    pool: self.clone(),
+                },
+            }
         } else {
-            let guard = self.state.writer.lock().await;
-            LeasedConnectionImpl::Writer(LeasedWriter {
-                connection: guard,
-                pool: self,
-            })
+            let guard = self.state.writer.lock_arc().await;
+            LeasedConnection {
+                inner: OwnedConnectionLease::Writer {
+                    connection: guard,
+                    pool: self.clone(),
+                },
+            }
         }
     }
 
-    pub async fn writer(&self) -> impl LeasedConnection {
+    pub async fn writer(&self) -> LeasedConnection {
         self.take_connection_async(true).await
     }
 
-    pub fn writer_sync(&self) -> impl LeasedConnection {
+    pub fn writer_sync(&self) -> LeasedConnection {
         self.take_connection_sync(true)
     }
 
-    pub async fn reader(&self) -> impl LeasedConnection {
+    pub async fn reader(&self) -> LeasedConnection {
         self.take_connection_async(false).await
     }
 
-    pub fn reader_sync(&self) -> impl LeasedConnection {
+    pub fn reader_sync(&self) -> LeasedConnection {
         self.take_connection_sync(false)
     }
 }
-
-/// A temporary lease of a connection taken from the [ConnectionPool].
-///
-/// The connection is released into the pool when dropped.
-pub trait LeasedConnection: DerefMut<Target = Connection> {}
 
 #[derive(Clone, Deserialize)]
 #[serde(transparent)]
@@ -176,7 +179,7 @@ pub struct SqliteUpdateNotification {
 }
 
 struct PoolState {
-    writer: Mutex<Connection>,
+    writer: Arc<Mutex<Connection>>,
     readers: Option<PoolReaders>,
     table_notifiers: Arc<TableNotifiers>,
 }
@@ -186,66 +189,72 @@ struct PoolReaders {
     release_reader: Sender<Connection>,
 }
 
-struct LeasedWriter<'a> {
-    connection: MutexGuard<'a, Connection>,
-    pool: &'a ConnectionPool,
+enum OwnedConnectionLease {
+    Writer {
+        connection: MutexGuardArc<Connection>,
+        pool: ConnectionPool,
+    },
+    Reader {
+        connection: MaybeUninit<Connection>,
+        pool: ConnectionPool,
+    },
 }
 
-impl Drop for LeasedWriter<'_> {
+impl Drop for OwnedConnectionLease {
     fn drop(&mut self) {
-        // Send update notifications for writes made on this connection while leased.
-        let _ = self.pool.take_update_notifications(&self.connection);
+        match self {
+            OwnedConnectionLease::Writer { connection, pool } => {
+                // Send update notifications for writes made on this connection while leased.
+                let _ = pool.take_update_notifications(connection);
+            }
+            OwnedConnectionLease::Reader { connection, pool } => {
+                let connection = std::mem::replace(connection, MaybeUninit::uninit());
+                let connection = unsafe {
+                    // safety: Only dropped here
+                    connection.assume_init()
+                };
+
+                pool.state
+                    .readers
+                    .as_ref()
+                    .unwrap()
+                    .release_reader
+                    .send_blocking(connection)
+                    .expect("should send connection into pool");
+            }
+        }
     }
 }
 
-struct LeasedReader<'a> {
-    connection: MaybeUninit<Connection>,
-    release: &'a Sender<Connection>,
+/// A temporary lease of a connection taken from the [ConnectionPool].
+///
+/// The connection is released into the pool when dropped.
+pub struct LeasedConnection {
+    inner: OwnedConnectionLease,
 }
 
-impl Drop for LeasedReader<'_> {
-    fn drop(&mut self) {
-        let connection = std::mem::replace(&mut self.connection, MaybeUninit::uninit());
-        let connection = unsafe {
-            // safety: Only dropped here
-            connection.assume_init()
-        };
-
-        self.release
-            .send_blocking(connection)
-            .expect("should send connection into pool");
-    }
-}
-
-enum LeasedConnectionImpl<'a> {
-    Writer(LeasedWriter<'a>),
-    Reader(LeasedReader<'a>),
-}
-
-impl<'a> Deref for LeasedConnectionImpl<'a> {
+impl Deref for LeasedConnection {
     type Target = Connection;
 
     fn deref(&self) -> &Self::Target {
-        match self {
-            LeasedConnectionImpl::Writer(writer) => &writer.connection,
-            LeasedConnectionImpl::Reader(reader) => unsafe {
+        match &self.inner {
+            OwnedConnectionLease::Writer { connection, .. } => connection,
+            OwnedConnectionLease::Reader { connection, .. } => unsafe {
                 // safety: This is initialized by default, and only uninitialized on Drop.
-                reader.connection.assume_init_ref()
+                connection.assume_init_ref()
             },
         }
     }
 }
 
-impl<'a> DerefMut for LeasedConnectionImpl<'a> {
+impl DerefMut for LeasedConnection {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            LeasedConnectionImpl::Writer(writer) => &mut writer.connection,
-            LeasedConnectionImpl::Reader(reader) => unsafe {
+        match &mut self.inner {
+            OwnedConnectionLease::Writer { connection, .. } => connection,
+            OwnedConnectionLease::Reader { connection, .. } => unsafe {
                 // safety: This is initialized by default, and only uninitialized on Drop.
-                reader.connection.assume_init_mut()
+                connection.assume_init_mut()
             },
         }
     }
 }
-
-impl<'a> LeasedConnection for LeasedConnectionImpl<'a> {}

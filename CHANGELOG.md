@@ -3,6 +3,7 @@
 - __Breaking__: Remove the `http-client` crate dependency. Instead, implement the `HttpClient` trait
   from the `powersync` crate directly.
 - __Breaking__: The `Timer` passed to `PowerSyncEnvironment` is now a `&'static` reference instead of a `Box`.
+- __Breaking__: `LeasedConnection` is a struct instead of a trait now.
 
 ## 0.0.4
 

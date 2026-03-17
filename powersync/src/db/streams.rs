@@ -208,6 +208,7 @@ impl Drop for StreamSubscriptionGroup {
     }
 }
 
+#[derive(Clone)]
 pub struct StreamSubscription {
     group: Arc<StreamSubscriptionGroup>,
 }
