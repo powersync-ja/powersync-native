@@ -4,6 +4,7 @@
   from the `powersync` crate directly.
 - __Breaking__: The `Timer` passed to `PowerSyncEnvironment` is now a `&'static` reference instead of a `Box`.
 - __Breaking__: `LeasedConnection` is a struct instead of a trait now.
+- Add `PowerSyncDatabase::watch_all_updates` to emit updates of all changed tables.
 
 ## 0.0.4
 
