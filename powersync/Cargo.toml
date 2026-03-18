@@ -33,7 +33,7 @@ reqwest = { version = "0.13.2", optional = true, features = ["stream"] }
 bytes = "1"
 log = "0.4.28"
 pin-project-lite = "0.2.16"
-rusqlite = { version = "0.37.0", features = ["load_extension"] }
+rusqlite = { version = "0.39.0", features = ["load_extension"] }
 scopeguard = "1.2.0"
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.143", features = ["raw_value"] }

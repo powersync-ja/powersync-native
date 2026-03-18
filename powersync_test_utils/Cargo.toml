@@ -19,7 +19,7 @@ log = "0.4.28"
 bytes = "1"
 pin-project-lite = "0.2.16"
 powersync = { path = "../powersync" }
-rusqlite = { version = "0.37.0", features = ["load_extension", "bundled"] }
+rusqlite = { version = "0.39.0", features = ["load_extension", "bundled"] }
 serde = "1.0.228"
 serde_json = "1.0.145"
 serde_with = "3.15.0"
