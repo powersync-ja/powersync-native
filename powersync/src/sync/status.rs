@@ -125,6 +125,13 @@ impl SyncStatusData {
         None
     }
 
+    /// This is only meant to be used for internal use-cases where this SDK is used to implement
+    /// another PowerSync SDK.
+    #[doc(hidden)]
+    pub fn internal_streams(&self) -> &[ActiveStreamSubscription] {
+        &self.downloading.streams
+    }
+
     /// All sync streams currently being tracked in the database.
     pub fn streams<'a>(&'a self) -> impl Iterator<Item = SyncStreamStatus<'a>> + 'a {
         self.downloading

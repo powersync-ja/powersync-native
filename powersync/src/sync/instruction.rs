@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime};
 
-use serde::{Deserialize, de::IgnoredAny};
+use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::value::RawValue;
 
 use crate::{sync::progress::ProgressCounters, util::SerializedJsonObject};
@@ -70,7 +70,7 @@ pub struct DownloadSyncStatus {
     pub downloading: Option<IgnoredAny>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct ActiveStreamSubscription {
     pub name: String,
     pub parameters: Option<Box<SerializedJsonObject>>,
@@ -84,7 +84,7 @@ pub struct ActiveStreamSubscription {
 }
 
 #[repr(transparent)]
-#[derive(Deserialize, Clone, Copy, Debug)]
+#[derive(Deserialize, Serialize, Clone, Copy, Debug)]
 pub struct Timestamp(pub i64);
 
 impl From<Timestamp> for SystemTime {
