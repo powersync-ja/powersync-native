@@ -150,7 +150,11 @@ struct EmitAll {
 }
 
 impl TableListenerState {
-    /// If the dirty flag is set, clears it and returns `true`. Otherwise returns `false`.
+    /// If there is an outstanding event, consumes and returns it.
+    ///
+    /// For listeners that emit events when a matched table is updated, the event is always going to
+    /// be an empty set (which doesn't require an allocation to create). For a listener that matches
+    /// all tables, we need to emit the actual tables that have been updated in the meantime.
     fn take_updates(&self) -> Option<HashSet<String>> {
         self.config.take_updates()
     }
