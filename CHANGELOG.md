@@ -1,3 +1,7 @@
+## 0.0.6 (unreleased)
+
+- Skip creating `ps_crud` entries when clearing raw tables.
+
 ## 0.0.5
 
 - __Breaking__: Remove the `http-client` crate dependency. Instead, implement the `HttpClient` trait
