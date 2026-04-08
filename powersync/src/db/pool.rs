@@ -1,16 +1,16 @@
-use std::{
-    collections::HashSet,
-    mem::MaybeUninit,
-    ops::{Deref, DerefMut},
-    path::Path,
-    sync::Arc,
-};
+#[cfg(feature = "rusqlite")]
+use std::ops::{Deref, DerefMut};
+use std::{collections::HashSet, mem::MaybeUninit, path::Path, sync::Arc};
 
 use async_channel::{Receiver, Sender};
 use async_lock::{Mutex, MutexGuardArc};
-use rusqlite::{Connection, Error, params};
+use powersync_sqlite_nostd::ResultCode;
+use powersync_sqlite_nostd::bindings::{
+    SQLITE_OPEN_CREATE, SQLITE_OPEN_READONLY, SQLITE_OPEN_READWRITE,
+};
 use serde::Deserialize;
 
+use crate::db::connection::{RawSqliteConnection, SqliteConnection};
 use crate::{db::watch::TableNotifiers, error::PowerSyncError};
 
 /// A raw connection pool, giving out both synchronous and asynchronous leases to SQLite
@@ -21,45 +21,49 @@ pub struct ConnectionPool {
 }
 
 impl ConnectionPool {
-    fn prepare_writer(connection: Connection) -> Arc<Mutex<Connection>> {
+    fn prepare_writer(connection: SqliteConnection) -> Arc<Mutex<SqliteConnection>> {
         connection
-            .prepare("SELECT powersync_update_hooks('install');")
-            .expect("should prepare statement for update hooks")
-            .query_one(params![], |_| Ok(()))
+            .exec(c"SELECT powersync_update_hooks('install');")
             .expect("could not install update hook");
 
         Arc::new(Mutex::new(connection))
     }
 
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, PowerSyncError> {
-        let writer = Connection::open(&path)?;
+        let writer = SqliteConnection::from(RawSqliteConnection::open_path(
+            &path,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+        )?);
 
-        writer.pragma_update(None, "journal_mode", "WAL")?;
-        writer.pragma_update(None, "journal_size_limit", 6 * 1024 * 1024)?;
-        writer.pragma_update(None, "busy_timeout", 30_000)?;
-        writer.pragma_update(None, "cache_size", 50 * 1024)?;
+        writer.exec(c"PRAGMA journal_mode = WAL")?;
+        writer.exec(c"PRAGMA journal_size_limit = 6291456")?; // 6 * 1024 * 1024
+        writer.exec(c"PRAGMA busy_timeout = 30000")?;
+        writer.exec(c"PRAGMA cache_size = -51200")?; // -(50 * 1024)
 
         let mut readers = vec![];
         for _ in 0..5 {
-            let reader = Connection::open(&path)?;
-            reader.pragma_update(None, "query_only", true)?;
+            let reader = SqliteConnection::from(RawSqliteConnection::open_path(
+                &path,
+                SQLITE_OPEN_READONLY,
+            )?);
+            reader.exec(c"PRAGMA query_only = 1")?;
             readers.push(reader);
         }
 
         Ok(Self::wrap_connections(writer, readers))
     }
 
-    /// Creates a pool backed by a single write ad multiple reader connections.
+    /// Creates a pool backed by a single write and multiple reader connections.
     ///
     /// Connections will be configured to use WAL mode.
     pub fn wrap_connections(
-        writer: Connection,
-        readers: impl IntoIterator<Item = Connection>,
+        writer: impl Into<SqliteConnection>,
+        readers: impl IntoIterator<Item = impl Into<SqliteConnection>>,
     ) -> Self {
-        let writer = Self::prepare_writer(writer);
-        let (release, consume) = async_channel::unbounded::<Connection>();
+        let writer = Self::prepare_writer(writer.into());
+        let (release, consume) = async_channel::unbounded::<SqliteConnection>();
         for reader in readers {
-            release.send_blocking(reader).unwrap();
+            release.send_blocking(reader.into()).unwrap();
         }
 
         Self {
@@ -75,10 +79,10 @@ impl ConnectionPool {
     }
 
     /// Creates a connection pool backed by a single sqlite connection.
-    pub fn single_connection(conn: Connection) -> Self {
+    pub fn single_connection(conn: impl Into<SqliteConnection>) -> Self {
         Self {
             state: Arc::new(PoolState {
-                writer: Self::prepare_writer(conn),
+                writer: Self::prepare_writer(conn.into()),
                 readers: None,
                 table_notifiers: Default::default(),
             }),
@@ -115,19 +119,23 @@ impl ConnectionPool {
 
     fn take_update_notifications(
         &self,
-        writer: &Connection,
-    ) -> Result<SqliteUpdateNotification, Error> {
-        let mut stmt = writer.prepare_cached("SELECT powersync_update_hooks('get');")?;
-        let rows: String = stmt.query_one(params![], |row| row.get(0))?;
+        writer: &SqliteConnection,
+    ) -> Result<SqliteUpdateNotification, PowerSyncError> {
+        let stmt = writer.prepare("SELECT powersync_update_hooks('get');")?;
 
-        let updates = serde_json::from_str::<SqliteUpdateNotification>(&rows)
-            .map_err(|_| Error::InvalidQuery)?;
+        match stmt.step()? {
+            ResultCode::ROW => {
+                let updates =
+                    serde_json::from_str::<SqliteUpdateNotification>(stmt.column_text(0)?)?;
 
-        if !updates.tables.is_empty() {
-            self.state.table_notifiers.notify_updates(&updates.tables);
+                if !updates.tables.is_empty() {
+                    self.state.table_notifiers.notify_updates(&updates.tables);
+                }
+
+                Ok(updates)
+            }
+            code => Err(code.into()),
         }
-
-        Ok(updates)
     }
 
     async fn take_connection_async(&self, writer: bool) -> LeasedConnection {
@@ -179,23 +187,23 @@ pub struct SqliteUpdateNotification {
 }
 
 struct PoolState {
-    writer: Arc<Mutex<Connection>>,
+    writer: Arc<Mutex<SqliteConnection>>,
     readers: Option<PoolReaders>,
     table_notifiers: Arc<TableNotifiers>,
 }
 
 struct PoolReaders {
-    take_reader: Receiver<Connection>,
-    release_reader: Sender<Connection>,
+    take_reader: Receiver<SqliteConnection>,
+    release_reader: Sender<SqliteConnection>,
 }
 
 enum OwnedConnectionLease {
     Writer {
-        connection: MutexGuardArc<Connection>,
+        connection: MutexGuardArc<SqliteConnection>,
         pool: ConnectionPool,
     },
     Reader {
-        connection: MaybeUninit<Connection>,
+        connection: MaybeUninit<SqliteConnection>,
         pool: ConnectionPool,
     },
 }
@@ -233,10 +241,8 @@ pub struct LeasedConnection {
     inner: OwnedConnectionLease,
 }
 
-impl Deref for LeasedConnection {
-    type Target = Connection;
-
-    fn deref(&self) -> &Self::Target {
+impl LeasedConnection {
+    pub(crate) fn sqlite_connection(&self) -> &SqliteConnection {
         match &self.inner {
             OwnedConnectionLease::Writer { connection, .. } => connection,
             OwnedConnectionLease::Reader { connection, .. } => unsafe {
@@ -245,10 +251,8 @@ impl Deref for LeasedConnection {
             },
         }
     }
-}
 
-impl DerefMut for LeasedConnection {
-    fn deref_mut(&mut self) -> &mut Self::Target {
+    pub(crate) fn sqlite_connection_mut(&mut self) -> &mut SqliteConnection {
         match &mut self.inner {
             OwnedConnectionLease::Writer { connection, .. } => connection,
             OwnedConnectionLease::Reader { connection, .. } => unsafe {
@@ -256,5 +260,21 @@ impl DerefMut for LeasedConnection {
                 connection.assume_init_mut()
             },
         }
+    }
+}
+
+#[cfg(feature = "rusqlite")]
+impl Deref for LeasedConnection {
+    type Target = rusqlite::Connection;
+
+    fn deref(&self) -> &Self::Target {
+        self.sqlite_connection().rusqlite_connection()
+    }
+}
+
+#[cfg(feature = "rusqlite")]
+impl DerefMut for LeasedConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.sqlite_connection_mut().rusqlite_connection_mut()
     }
 }

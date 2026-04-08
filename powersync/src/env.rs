@@ -1,10 +1,10 @@
-use std::{pin::Pin, time::Duration};
-
-use powersync_core::powersync_init_static;
-
 use super::db::pool::ConnectionPool;
-use crate::error::PowerSyncError;
+use crate::error::{PowerSyncError, RawPowerSyncError};
 use crate::http::HttpClient;
+use num_traits::FromPrimitive;
+use powersync_core::powersync_init_static;
+use powersync_sqlite_nostd::ResultCode;
+use std::{pin::Pin, time::Duration};
 
 /// All external dependencies required for the PowerSync SDK.
 ///
@@ -38,13 +38,12 @@ impl PowerSyncEnvironment {
     /// This needs to be invoked before using the PowerSync SDK. It can safely be called multiple
     /// times.
     pub fn powersync_auto_extension() -> Result<(), PowerSyncError> {
-        let rc = powersync_init_static();
-        match rc {
+        match powersync_init_static() {
             0 => Ok(()),
-            _ => Err(rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(rc),
-                Some("Loading PowerSync core extension failed".into()),
-            )
+            code => Err(RawPowerSyncError::RawSqlite {
+                code: ResultCode::from_i32(code).unwrap(),
+                context: "Loading PowerSync core extension failed".into(),
+            }
             .into()),
         }
     }

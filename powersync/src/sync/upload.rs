@@ -5,8 +5,9 @@ use futures_lite::{
     future::{self, Boxed},
 };
 use log::{debug, info, warn};
-use rusqlite::{Connection, params};
+use powersync_sqlite_nostd::{Destructor, ResultCode};
 
+use crate::db::connection::{SqliteConnection, TransactionGuard};
 use crate::db::watch::ListenerConfiguration;
 use crate::sync::coordinator::SyncCoordinator;
 use crate::{
@@ -291,53 +292,62 @@ impl<'a> CrudUpload<'a> {
 
     async fn oldest_crud_item_id(&self) -> Result<Option<i64>, PowerSyncError> {
         let reader = self.db.reader().await?;
-        Self::read_oldest_crud_item_id(&reader)
+        Self::read_oldest_crud_item_id(reader.sqlite_connection())
     }
 
     async fn get_write_checkpoint(&self) -> Result<i64, PowerSyncError> {
         let client_id = {
             let reader = self.db.reader().await?;
-            let mut stmt = reader.prepare("SELECT powersync_client_id()")?;
-            let id: String = stmt.query_one(params![], |row| row.get(0))?;
-            id
+
+            let stmt = reader
+                .sqlite_connection()
+                .prepare("SELECT powersync_client_id()")?;
+            let ResultCode::ROW = stmt.step()? else {
+                panic!("Expected row");
+            };
+
+            stmt.column_text(0)?.to_string()
         };
 
         let credentials = self.connector.fetch_credentials().await?;
         write_checkpoint(&self.db, &client_id, credentials).await
     }
 
-    fn read_oldest_crud_item_id(conn: &Connection) -> Result<Option<i64>, PowerSyncError> {
-        let mut stmt = conn.prepare("SELECT id FROM ps_crud ORDER BY id LIMIT 1")?;
-        let mut rows = stmt.query(params![])?;
+    fn read_oldest_crud_item_id(conn: &SqliteConnection) -> Result<Option<i64>, PowerSyncError> {
+        let stmt = conn.prepare("SELECT id FROM ps_crud ORDER BY id LIMIT 1")?;
 
-        Ok(match rows.next()? {
-            None => None,
-            Some(row) => Some(row.get(0)?),
+        Ok(match stmt.step()? {
+            ResultCode::ROW => Some(stmt.column_int64(0)),
+            _ => None,
         })
     }
 
-    fn ps_crud_sequence(conn: &Connection) -> Result<Option<i64>, PowerSyncError> {
-        let mut seq_before = conn.prepare("SELECT seq FROM main.sqlite_sequence WHERE name = ?")?;
-        let mut seq_before = seq_before.query(params!["ps_crud"])?;
-        let Some(row) = seq_before.next()? else {
+    fn ps_crud_sequence(conn: &SqliteConnection) -> Result<Option<i64>, PowerSyncError> {
+        let seq_before = conn.prepare("SELECT seq FROM main.sqlite_sequence WHERE name = ?")?;
+        seq_before.bind_text(0, "ps_crud", Destructor::STATIC)?;
+
+        let ResultCode::ROW = seq_before.step()? else {
             return Ok(None);
         };
 
-        Ok(row.get(0)?)
+        Ok(Some(seq_before.column_int64(0)))
     }
 
     async fn sequence_for_checkpoint(
         &self,
     ) -> Result<Option<PendingCheckpointRequest>, PowerSyncError> {
         let reader = self.db.reader().await?;
+        let reader = reader.sqlite_connection();
         {
-            let mut stmt =
+            let stmt =
                 reader.prepare("SELECT 1 FROM ps_buckets WHERE name = ? AND target_op = ?")?;
-            let mut rows = stmt.query(params!["$local", MAX_OP_ID])?;
-            if rows.next()?.is_none() {
+            stmt.bind_text(1, "$local", Destructor::STATIC)?;
+            stmt.bind_int64(2, MAX_OP_ID)?;
+
+            let ResultCode::ROW = stmt.step()? else {
                 // Nothing to update.
                 return Ok(None);
-            }
+            };
         }
 
         let seq_before = Self::ps_crud_sequence(&reader)?;
@@ -366,15 +376,15 @@ impl PendingCheckpointRequest {
         info!("Updating target to checkpoint {}", self.crud_sequence);
 
         let mut writer = db.writer().await?;
-        let writer = writer.transaction()?;
+        let writer = TransactionGuard::new(writer.sqlite_connection_mut())?;
 
-        if CrudUpload::read_oldest_crud_item_id(&writer)?.is_some() {
+        if CrudUpload::read_oldest_crud_item_id(writer.inner)?.is_some() {
             warn!("ps_crud is not empty, won't advance target");
             return Ok(());
         }
 
-        let seq_after =
-            CrudUpload::ps_crud_sequence(&writer)?.expect("sqlite sequence should not be empty");
+        let seq_after = CrudUpload::ps_crud_sequence(writer.inner)?
+            .expect("sqlite sequence should not be empty");
 
         if seq_after != self.crud_sequence {
             debug!(
@@ -384,10 +394,7 @@ impl PendingCheckpointRequest {
             return Ok(());
         }
 
-        writer.execute(
-            "UPDATE ps_buckets SET target_op = ? WHERE name = ?",
-            params![op_id, "$local"],
-        )?;
+        InnerPowerSyncState::set_local_target_op(writer.inner, op_id)?;
 
         writer.commit()?;
         Ok(())

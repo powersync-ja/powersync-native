@@ -7,8 +7,9 @@ use std::{
 };
 
 use event_listener::{Event, EventListener};
-use rusqlite::{Connection, params};
+use powersync_sqlite_nostd::ResultCode;
 
+use crate::db::connection::SqliteConnection;
 use crate::{
     error::PowerSyncError,
     sync::{
@@ -170,12 +171,15 @@ impl SyncStatusData {
 
     pub(crate) fn resolve_offline_state(
         &mut self,
-        conn: &Connection,
+        conn: &SqliteConnection,
     ) -> Result<(), PowerSyncError> {
-        let mut stmt = conn.prepare_cached("SELECT powersync_offline_sync_status()")?;
-        let raw_status: String = stmt.query_row(params![], |row| row.get(0))?;
+        let stmt = conn.prepare("SELECT powersync_offline_sync_status()")?;
+        let ResultCode::ROW = stmt.step()? else {
+            panic!("Expected row");
+        };
 
-        self.update_from_core(serde_json::from_str(&raw_status)?);
+        let raw_status = stmt.column_text(0)?;
+        self.update_from_core(serde_json::from_str(raw_status)?);
         Ok(())
     }
 

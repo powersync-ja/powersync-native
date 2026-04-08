@@ -1,10 +1,8 @@
+use powersync_sqlite_nostd::ResultCode;
 use std::error::Error;
 use std::io;
 use std::sync::Arc;
 use std::{borrow::Cow, fmt::Display};
-
-use rusqlite::Error as SqliteError;
-use rusqlite::types::FromSqlError;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, PowerSyncError>;
@@ -24,8 +22,9 @@ impl PowerSyncError {
     }
 }
 
-impl From<SqliteError> for PowerSyncError {
-    fn from(value: SqliteError) -> Self {
+#[cfg(feature = "rusqlite")]
+impl From<rusqlite::Error> for PowerSyncError {
+    fn from(value: rusqlite::Error) -> Self {
         RawPowerSyncError::Sqlite { inner: value }.into()
     }
 }
@@ -68,13 +67,17 @@ pub(crate) enum RawPowerSyncError {
     #[error("invalid argument: {desc}")]
     ArgumentError { desc: Cow<'static, str> },
     /// An inner SQLite call failed.
+    #[cfg(feature = "rusqlite")]
     #[error("SQLite: {inner}")]
-    Sqlite { inner: SqliteError },
+    Sqlite { inner: rusqlite::Error },
+    #[error("SQLite: {context} failed with {code}")]
+    RawSqlite { code: ResultCode, context: String },
     /// Reading a value from SQLite failed.
+    #[cfg(feature = "rusqlite")]
     #[error("Reading from SQLite: {inner}")]
     FromSql {
         #[from]
-        inner: FromSqlError,
+        inner: rusqlite::types::FromSqlError,
     },
     /// The version of the core extension linked into the application is unexpected.
     ///
@@ -105,4 +108,14 @@ pub(crate) enum RawPowerSyncError {
     InvalidCredentials,
     #[error("Unexpected HTTP status code from PowerSync service: {code}")]
     UnexpectedStatusCode { code: u16 },
+}
+
+impl From<ResultCode> for PowerSyncError {
+    fn from(value: ResultCode) -> Self {
+        RawPowerSyncError::RawSqlite {
+            code: value,
+            context: String::new(),
+        }
+        .into()
+    }
 }

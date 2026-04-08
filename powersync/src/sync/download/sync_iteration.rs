@@ -2,13 +2,11 @@ use std::sync::Arc;
 
 use futures_lite::{StreamExt, future, stream::Boxed as BoxedStream};
 use log::{debug, info, trace, warn};
-use rusqlite::{
-    Connection, ToSql, params,
-    types::{ToSqlOutput, ValueRef},
-};
+use powersync_sqlite_nostd::{Destructor, ManagedStmt, ResultCode};
 use serde::Serialize;
 use serde_json::value::RawValue;
 
+use crate::db::connection::{SqliteConnection, TransactionGuard};
 use crate::schema::SchemaOrCustom;
 use crate::{
     SyncOptions,
@@ -55,7 +53,7 @@ impl DownloadClient {
             trace!("Handling event {event:?}");
             let mut conn = self.db.writer().await?;
 
-            for instr in event.invoke_control(&mut conn)? {
+            for instr in event.invoke_control(conn.sqlite_connection_mut())? {
                 trace!("Handling instruction {instr:?}");
 
                 match instr {
@@ -181,23 +179,28 @@ impl DownloadEvent {
 
     /// Forwards the event to the core extension, and returns instructions that the SDK needs to
     /// perform.
-    pub fn invoke_control(self, conn: &mut Connection) -> Result<Vec<Instruction>, PowerSyncError> {
-        let tx = conn.transaction()?;
+    pub fn invoke_control(
+        self,
+        conn: &mut SqliteConnection,
+    ) -> Result<Vec<Instruction>, PowerSyncError> {
+        let tx = TransactionGuard::new(conn)?;
 
         let instructions = {
-            let mut stmt = tx.prepare_cached("SELECT powersync_control(?, ?)")?;
+            let stmt = tx.inner.prepare("SELECT powersync_control(?, ?)")?;
             let (op, arg) = self.into_powersync_control_argument();
 
-            let mut rows = stmt.query(params![op, arg])?;
-            let Some(row) = rows.next()? else {
-                return Err(rusqlite::Error::QueryReturnedNoRows)?;
-            };
+            stmt.bind_text(1, op, Destructor::STATIC)?;
+            arg.bind_to(&stmt, 2)?;
 
-            let instructions = row.get_ref(0)?.as_str().map_err(|_| {
-                PowerSyncError::argument_error("Could not read powersync_control instructions")
-            })?;
+            if let ResultCode::ROW = stmt.step()? {
+                let instructions = stmt.column_text(0).map_err(|_| {
+                    PowerSyncError::argument_error("Could not read powersync_control instructions")
+                })?;
 
-            serde_json::from_str(instructions)?
+                serde_json::from_str(instructions)?
+            } else {
+                panic!("Statement should have returned a row")
+            }
         };
 
         tx.commit()?;
@@ -212,14 +215,21 @@ enum PowerSyncControlArgument {
     Bytes(Vec<u8>),
 }
 
-impl ToSql for PowerSyncControlArgument {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        Ok(ToSqlOutput::Borrowed(match self {
-            PowerSyncControlArgument::Null => ValueRef::Null,
-            PowerSyncControlArgument::StaticString(str) => ValueRef::Text(str.as_bytes()),
-            PowerSyncControlArgument::String(str) => ValueRef::Text(str.as_bytes()),
-            PowerSyncControlArgument::Bytes(items) => ValueRef::Blob(items),
-        }))
+impl PowerSyncControlArgument {
+    fn bind_to(&self, stmt: &ManagedStmt, index: i32) -> Result<(), ResultCode> {
+        match self {
+            PowerSyncControlArgument::Null => stmt.bind_null(index),
+            PowerSyncControlArgument::StaticString(str) => {
+                stmt.bind_text(index, str, Destructor::STATIC)
+            }
+            PowerSyncControlArgument::String(str) => {
+                stmt.bind_text(index, &str, Destructor::STATIC)
+            }
+            PowerSyncControlArgument::Bytes(bytes) => {
+                stmt.bind_blob(index, &bytes, Destructor::STATIC)
+            }
+        }?;
+        Ok(())
     }
 }
 

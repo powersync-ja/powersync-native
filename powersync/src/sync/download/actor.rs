@@ -96,7 +96,7 @@ impl DownloadActor {
                             let writer = self.db.writer().await?;
                             self.db
                                 .status
-                                .update(|s| s.resolve_offline_state(&writer))?;
+                                .update(|s| s.resolve_offline_state(writer.sqlite_connection()))?;
 
                             Ok::<(), PowerSyncError>(())
                         }

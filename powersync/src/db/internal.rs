@@ -1,14 +1,4 @@
-use event_listener::EventListener;
-use futures_lite::{FutureExt, Stream, StreamExt, ready};
-use rusqlite::{Connection, params};
-use std::sync::{Mutex, Weak};
-use std::time::Duration;
-use std::{
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-};
-
+use crate::db::connection::{SqliteConnection, TransactionGuard, exec_stmt};
 use crate::schema::SchemaOrCustom;
 use crate::{
     db::{
@@ -18,6 +8,16 @@ use crate::{
     error::PowerSyncError,
     sync::{MAX_OP_ID, coordinator::SyncCoordinator, status::SyncStatus, status::SyncStatusData},
     util::SharedFuture,
+};
+use event_listener::EventListener;
+use futures_lite::{FutureExt, Stream, StreamExt, ready};
+use powersync_sqlite_nostd::{Destructor, ResultCode};
+use std::sync::{Mutex, Weak};
+use std::time::Duration;
+use std::{
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
 };
 
 pub struct InnerPowerSyncState {
@@ -62,13 +62,13 @@ impl InnerPowerSyncState {
         self.did_initialize
             .run(|| async {
                 let conn = pool.writer().await;
-                CoreExtensionVersion::check_from_db(&conn)?;
+                let conn = conn.sqlite_connection();
+                CoreExtensionVersion::check_from_db(conn)?;
 
-                conn.prepare("SELECT powersync_init()")?
-                    .query_row(params![], |_| Ok(()))?;
+                conn.exec(c"SELECT powersync_init()")?;
 
-                self.update_schema_internal(&conn)?;
-                self.status.update(|old| old.resolve_offline_state(&conn))?;
+                self.update_schema_internal(conn)?;
+                self.status.update(|old| old.resolve_offline_state(conn))?;
 
                 Ok(())
             })
@@ -76,14 +76,16 @@ impl InnerPowerSyncState {
             .clone()
     }
 
-    fn update_schema_internal(&self, conn: &Connection) -> Result<(), PowerSyncError> {
+    fn update_schema_internal(&self, conn: &SqliteConnection) -> Result<(), PowerSyncError> {
         if let SchemaOrCustom::Schema(schema) = self.schema.as_ref() {
             schema.validate()?;
         };
 
         let serialized_schema = serde_json::to_string(&self.schema)?;
-        conn.prepare("SELECT powersync_replace_schema(?)")?
-            .query_one(params![serialized_schema], |_| Ok(()))?;
+        let stmt = conn.prepare("SELECT powersync_replace_schema(?)")?;
+        stmt.bind_text(1, &serialized_schema, Destructor::STATIC)?;
+        exec_stmt(stmt)?;
+
         // TODO: Update readers? Should be fine at the moment because we're only doing this during
         // initialization.
         Ok(())
@@ -97,25 +99,32 @@ impl InnerPowerSyncState {
         write_checkpoint: Option<i64>,
     ) -> Result<(), PowerSyncError> {
         let mut writer = self.writer().await?;
-        let writer = writer.transaction()?;
+        let writer = TransactionGuard::new(writer.sqlite_connection_mut())?;
 
-        writer.execute("DELETE FROM ps_crud WHERE id <= ?", params![last_client_id])?;
+        {
+            let stmt = writer.inner.prepare("DELETE FROM ps_crud WHERE id <= ?")?;
+            stmt.bind_int64(1, last_client_id)?;
+            exec_stmt(stmt)?;
+        }
+
         let mut target_op: i64 = MAX_OP_ID;
         if let Some(write_checkpoint) = write_checkpoint {
             // If there are no remaining crud items we can set the target op to the checkpoint.
-            let mut stmt = writer.prepare("SELECT 1 FROM ps_crud LIMIT 1")?;
-            if stmt.query(params![])?.next()?.is_none() {
+            let stmt = writer.inner.prepare("SELECT 1 FROM ps_crud LIMIT 1")?;
+            if let ResultCode::OK = stmt.step()? {
                 target_op = write_checkpoint;
             }
         }
 
-        writer.execute(
-            "UPDATE ps_buckets SET target_op = ? WHERE name = ?",
-            params![target_op, "$local"],
-        )?;
-        writer.commit()?;
+        Self::set_local_target_op(writer.inner, target_op)?;
+        writer.commit()
+    }
 
-        Ok(())
+    pub fn set_local_target_op(writer: &SqliteConnection, op: i64) -> Result<(), PowerSyncError> {
+        let stmt = writer.prepare("UPDATE ps_buckets SET target_op = ? WHERE name = ?")?;
+        stmt.bind_int64(1, op)?;
+        stmt.bind_text(2, "$local", Destructor::STATIC)?;
+        exec_stmt(stmt)
     }
 
     pub async fn reader(&self) -> Result<LeasedConnection, PowerSyncError> {

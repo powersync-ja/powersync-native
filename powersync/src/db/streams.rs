@@ -1,3 +1,4 @@
+use crate::db::connection::{TransactionGuard, exec_stmt};
 use crate::{
     PowerSyncDatabase, StreamPriority,
     db::internal::InnerPowerSyncState,
@@ -8,7 +9,7 @@ use crate::{
     },
     util::SerializedJsonObject,
 };
-use rusqlite::params;
+use powersync_sqlite_nostd::Destructor;
 use std::{
     cell::Cell,
     collections::HashMap,
@@ -85,14 +86,13 @@ impl<'a> SyncStream<'a> {
         let serialized = serde_json::to_string(cmd)?;
 
         let mut writer = self.db.writer().await?;
-        let writer = writer.transaction()?;
+        let writer = TransactionGuard::new(writer.sqlite_connection_mut())?;
 
         {
-            let mut stmt = writer.prepare_cached("SELECT powersync_control(?, ?)")?;
-            let mut rows = stmt.query(params!["subscriptions", serialized])?;
-
-            // Ignore results.
-            while rows.next()?.is_some() {}
+            let stmt = writer.inner.prepare("SELECT powersync_control(?, ?)")?;
+            stmt.bind_text(1, "subscriptions", Destructor::STATIC)?;
+            stmt.bind_text(2, &serialized, Destructor::STATIC)?;
+            exec_stmt(stmt)?;
         }
 
         writer.commit()?;
