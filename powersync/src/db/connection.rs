@@ -182,17 +182,14 @@ impl RawSqliteConnection {
 }
 
 pub fn exec_stmt(stmt: ManagedStmt) -> Result<(), PowerSyncError> {
-    loop {
-        return match stmt.step() {
-            Err(e) => Err(RawPowerSyncError::RawSqlite {
-                code: e,
-                context: format!("Stepping through {}", stmt.sql().unwrap_or("unknown SQL")),
-            }
-            .into()),
-            Ok(ResultCode::ROW) => continue,
-            _ => Ok(()),
-        };
+    while let ResultCode::ROW = stmt.step().map_err(|e| RawPowerSyncError::RawSqlite {
+        code: e,
+        context: format!("Stepping through {}", stmt.sql().unwrap_or("unknown SQL")),
+    })? {
+        // Keep stepping through statement.
     }
+
+    Ok(())
 }
 
 #[cfg(unix)]

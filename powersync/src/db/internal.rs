@@ -83,6 +83,7 @@ impl InnerPowerSyncState {
 
         let serialized_schema = serde_json::to_string(&self.schema)?;
         let stmt = conn.prepare("SELECT powersync_replace_schema(?)")?;
+        // Fine because we drop the statement before the serialized schema
         stmt.bind_text(1, &serialized_schema, Destructor::STATIC)?;
         exec_stmt(stmt)?;
 
