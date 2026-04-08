@@ -223,10 +223,10 @@ impl PowerSyncControlArgument {
                 stmt.bind_text(index, str, Destructor::STATIC)
             }
             PowerSyncControlArgument::String(str) => {
-                stmt.bind_text(index, &str, Destructor::STATIC)
+                stmt.bind_text(index, str, Destructor::STATIC)
             }
             PowerSyncControlArgument::Bytes(bytes) => {
-                stmt.bind_blob(index, &bytes, Destructor::STATIC)
+                stmt.bind_blob(index, bytes, Destructor::STATIC)
             }
         }?;
         Ok(())
