@@ -175,7 +175,7 @@ impl SyncStatusData {
     ) -> Result<(), PowerSyncError> {
         let stmt = conn.prepare("SELECT powersync_offline_sync_status()")?;
         let ResultCode::ROW = stmt.step()? else {
-            panic!("Expected row");
+            panic!("Expected row"); // Can't happen, scalar select
         };
 
         let raw_status = stmt.column_text(0)?;

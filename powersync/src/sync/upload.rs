@@ -303,7 +303,7 @@ impl<'a> CrudUpload<'a> {
                 .sqlite_connection()
                 .prepare("SELECT powersync_client_id()")?;
             let ResultCode::ROW = stmt.step()? else {
-                panic!("Expected row");
+                panic!("Expected row"); // Can't happen, scalar select
             };
 
             stmt.column_text(0)?.to_string()
@@ -324,7 +324,7 @@ impl<'a> CrudUpload<'a> {
 
     fn ps_crud_sequence(conn: &SqliteConnection) -> Result<Option<i64>, PowerSyncError> {
         let seq_before = conn.prepare("SELECT seq FROM main.sqlite_sequence WHERE name = ?")?;
-        seq_before.bind_text(0, "ps_crud", Destructor::STATIC)?;
+        seq_before.bind_text(1, "ps_crud", Destructor::STATIC)?;
 
         let ResultCode::ROW = seq_before.step()? else {
             return Ok(None);

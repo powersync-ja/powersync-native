@@ -199,7 +199,7 @@ impl DownloadEvent {
 
                 serde_json::from_str(instructions)?
             } else {
-                panic!("Statement should have returned a row")
+                panic!("Expected a row") // Can't happen, scalar select
             }
         };
 
@@ -217,14 +217,14 @@ enum PowerSyncControlArgument {
 
 impl PowerSyncControlArgument {
     fn bind_to(&self, stmt: &ManagedStmt, index: i32) -> Result<(), ResultCode> {
+        // We use Destructor::STATIC here which is technically not safe, but fine since we'll always
+        // drop the statement before the control argument.
         match self {
             PowerSyncControlArgument::Null => stmt.bind_null(index),
             PowerSyncControlArgument::StaticString(str) => {
                 stmt.bind_text(index, str, Destructor::STATIC)
             }
-            PowerSyncControlArgument::String(str) => {
-                stmt.bind_text(index, str, Destructor::STATIC)
-            }
+            PowerSyncControlArgument::String(str) => stmt.bind_text(index, str, Destructor::STATIC),
             PowerSyncControlArgument::Bytes(bytes) => {
                 stmt.bind_blob(index, bytes, Destructor::STATIC)
             }

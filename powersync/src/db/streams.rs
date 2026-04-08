@@ -91,6 +91,7 @@ impl<'a> SyncStream<'a> {
         {
             let stmt = writer.inner.prepare("SELECT powersync_control(?, ?)")?;
             stmt.bind_text(1, "subscriptions", Destructor::STATIC)?;
+            // Fine because we drop the statement before serialized
             stmt.bind_text(2, &serialized, Destructor::STATIC)?;
             exec_stmt(stmt)?;
         }

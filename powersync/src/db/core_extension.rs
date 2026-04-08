@@ -37,7 +37,7 @@ impl CoreExtensionVersion {
     pub(crate) fn check_from_db(conn: &SqliteConnection) -> Result<Self, PowerSyncError> {
         let stmt = conn.prepare("SELECT powersync_rs_version()")?;
         let ResultCode::ROW = stmt.step()? else {
-            panic!("Expected row")
+            panic!("Expected row") // Can't happen, scalar select
         };
 
         let version = stmt.column_text(0)?.parse::<Self>()?;
