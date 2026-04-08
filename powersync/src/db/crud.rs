@@ -3,12 +3,12 @@ use std::task::{Context, Poll};
 
 use futures_lite::{FutureExt, Stream, ready};
 use pin_project_lite::pin_project;
-use rusqlite::params;
+use powersync_sqlite_nostd::ResultCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::PowerSyncDatabase;
-use crate::error::{PowerSyncError, RawPowerSyncError};
+use crate::error::PowerSyncError;
 
 /// All local writes that were made in a single SQLite transaction.
 pub struct CrudTransaction<'a> {
@@ -147,17 +147,19 @@ impl<'a> CrudTransactionStream<'a> {
     ) -> Result<Option<(i64, CrudTransaction<'a>)>, PowerSyncError> {
         let last = last.unwrap_or(-1);
         let reader = db.reader().await?;
-        let mut stmt = reader.prepare_cached(Self::SQL)?;
-        let mut rows = stmt.query(params![last])?;
+        let conn = reader.sqlite_connection();
+        let stmt = conn.prepare(Self::SQL)?;
+        stmt.bind_int64(1, last)?;
+
         let mut crud_entries = vec![];
         let mut last = None::<(i64, i64)>;
 
-        while let Some(row) = rows.next()? {
-            let id: i64 = row.get(0)?;
-            let tx_id: i64 = row.get(1)?;
-            let data = row.get_ref(2)?.as_str().map_err(RawPowerSyncError::from)?;
-            last = Some((id, tx_id));
+        while let ResultCode::ROW = stmt.step()? {
+            let id = stmt.column_int64(0);
+            let tx_id = stmt.column_int64(1);
+            let data = stmt.column_text(2)?;
 
+            last = Some((id, tx_id));
             crud_entries.push(CrudEntry::parse(id, tx_id, data)?);
         }
 

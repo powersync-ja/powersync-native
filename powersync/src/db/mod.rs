@@ -17,11 +17,10 @@ use crate::{
     error::PowerSyncError,
     sync::{download::DownloadActor, status::SyncStatusData, upload::UploadActor},
 };
-use futures_lite::stream::{once, once_future};
 use futures_lite::{FutureExt, Stream, StreamExt};
-use rusqlite::{Params, Statement, params};
 
 mod async_support;
+pub(crate) mod connection;
 pub mod core_extension;
 pub mod crud;
 pub(crate) mod internal;
@@ -147,14 +146,16 @@ impl PowerSyncDatabase {
     /// This method is a core building block for reactive applications with PowerSync - since it
     /// updates automatically, all writes (regardless of whether they're local or due to synced
     /// writes from your backend) are reflected.
-    pub fn watch_statement<T, F, P: Params + Clone + 'static>(
+    #[cfg(feature = "rusqlite")]
+    pub fn watch_statement<T, F, P: rusqlite::Params + Clone + 'static>(
         &self,
         sql: String,
         params: P,
         read: F,
     ) -> impl Stream<Item = Result<T, PowerSyncError>> + 'static
     where
-        for<'a> F: (Fn(&'a mut Statement, P) -> Result<T, PowerSyncError>) + 'static + Clone,
+        for<'a> F:
+            (Fn(&'a mut rusqlite::Statement, P) -> Result<T, PowerSyncError>) + 'static + Clone,
     {
         // Find and watch referenced tables. We assume the set of read tables is fixed for a given
         // SQL query and parameters. We also want this to emit initially without an update so that
@@ -186,14 +187,15 @@ impl PowerSyncDatabase {
         })
     }
 
+    #[cfg(feature = "rusqlite")]
     fn emit_on_statement_changes(
         &self,
         emit_initially: bool,
         sql: String,
-        params: impl Params + 'static,
+        params: impl rusqlite::Params + 'static,
     ) -> impl Stream<Item = Result<(), PowerSyncError>> + 'static {
         // Stream emitting referenced tables once.
-        let tables = once_future(self.clone().find_tables(sql, params));
+        let tables = futures_lite::stream::once_future(self.clone().find_tables(sql, params));
 
         // Stream emitting updates, or a single error if we couldn't resolve tables.
         let db = self.clone();
@@ -202,14 +204,15 @@ impl PowerSyncDatabase {
                 .watch_tables(emit_initially, referenced_tables)
                 .map(Ok)
                 .boxed(),
-            Err(e) => once(Err(e)).boxed(),
+            Err(e) => futures_lite::stream::once(Err(e)).boxed(),
         })
     }
 
     /// Finds all tables that are used in a given select statement.
     ///
     /// This can be used together with [watch_tables] to build an auto-updating stream of queries.
-    async fn find_tables<P: Params>(
+    #[cfg(feature = "rusqlite")]
+    async fn find_tables<P: rusqlite::Params>(
         self,
         sql: impl Into<Cow<'static, str>>,
         params: P,
@@ -231,7 +234,7 @@ impl PowerSyncDatabase {
                 && matches!(p3.as_i64(), Ok(0))
                 && let Ok(page) = p2.as_i64()
             {
-                let mut found_table = find_table_stmt.query(params![page])?;
+                let mut found_table = find_table_stmt.query(rusqlite::params![page])?;
                 if let Some(found_table) = found_table.next()? {
                     let table_name: String = found_table.get(0)?;
                     found_tables.insert(table_name);
