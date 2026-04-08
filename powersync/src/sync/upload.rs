@@ -350,7 +350,7 @@ impl<'a> CrudUpload<'a> {
             };
         }
 
-        let seq_before = Self::ps_crud_sequence(&reader)?;
+        let seq_before = Self::ps_crud_sequence(reader)?;
         Ok(seq_before.map(|seq_before| PendingCheckpointRequest {
             crud_sequence: seq_before,
         }))
