@@ -420,5 +420,7 @@ fn upload_retry() {
 
         sync.wait_for_status(|s| s.upload_error().is_none() && !s.is_uploading())
             .await;
+
+        assert!(sync.db.next_crud_transaction().await.unwrap().is_none());
     });
 }
