@@ -1,6 +1,9 @@
-## 0.0.6 (unreleased)
+## 0.0.6
 
 - Skip creating `ps_crud` entries when clearing raw tables.
+- Call `upload_data` repeatedly if an upload fails.
+- Add `PowerSyncError::upload_error`, which can be used to convert any error into PowerSync errors for
+  `upload_data` callbacks.
 
 ## 0.0.5
 

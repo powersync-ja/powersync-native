@@ -10,6 +10,7 @@ use crate::{
     util::SharedFuture,
 };
 use event_listener::EventListener;
+use futures_lite::future::yield_now;
 use futures_lite::{FutureExt, Stream, StreamExt, ready};
 use powersync_sqlite_nostd::{Destructor, ResultCode};
 use std::sync::{Mutex, Weak};
@@ -144,8 +145,12 @@ impl InnerPowerSyncState {
             *guard
         };
 
-        if let Some(delay) = delay {
+        if let Some(delay) = delay
+            && delay > Duration::ZERO
+        {
             self.env.timer.delay_once(delay).await
+        } else {
+            yield_now().await
         }
     }
 

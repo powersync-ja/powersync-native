@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, ops::ControlFlow, sync::Arc};
 
 use futures_lite::{
     FutureExt, StreamExt,
@@ -159,55 +159,16 @@ impl UploadActor {
                     Self::state_transition_from_command_while_uploading(&self.commands, &self.db);
 
                 let upload_done = async {
-                    let (result, state) = result.await;
+                    let state = result.await;
+                    self.db
+                        .status
+                        .update(|s| s.set_upload_state(UploadStatus::Idle));
 
-                    match result {
-                        Ok(_) => {
-                            // It's possible that pending CRUD uploads were preventing data from
-                            // syncing. So now that that's completed, notify the download client in
-                            // case it needs to retry.
-                            if let Some(sync) = self.db.sync.upgrade() {
-                                sync.mark_crud_uploads_completed().await;
-                            }
-
-                            // Apart from that, the upload is done and we transition back into the
-                            // ready connected state to start the next iteration when needed.
-                            Some(UploadActorState::Connected(state))
-                        }
-                        Err(e) => {
-                            warn!("CRUD uploads failed, will retry, {e}");
-                            self.db
-                                .status
-                                .update(|s| s.set_upload_state(UploadStatus::Error(e)));
-                            let db = self.db.clone();
-
-                            Some(UploadActorState::WaitingForReconnect {
-                                timeout: async move {
-                                    db.sync_iteration_delay().await;
-                                    state
-                                }
-                                .boxed(),
-                            })
-                        }
-                    }
-                };
-
-                future::race(request, upload_done)
-                    .await
-                    .unwrap_or(old_state)
-            }
-            UploadActorState::WaitingForReconnect { ref mut timeout } => {
-                // Either the timeout expires, in which case we reconnect, or a disconnect is
-                // requested.
-                let request =
-                    Self::state_transition_from_command_while_uploading(&self.commands, &self.db);
-
-                let timeout_expired = async {
-                    let state = timeout.await;
+                    // The upload is done and we transition back into the  ready connected state to start the next iteration when needed.
                     Some(UploadActorState::Connected(state))
                 };
 
-                future::race(request, timeout_expired)
+                future::race(request, upload_done)
                     .await
                     .unwrap_or(old_state)
             }
@@ -223,9 +184,9 @@ impl UploadActor {
                     connector: state.connector.as_ref(),
                     db,
                 };
-                let result = upload.run().await;
+                upload.run().await;
 
-                (result, state)
+                state
             }
             .boxed(),
         }
@@ -235,12 +196,7 @@ impl UploadActor {
 enum UploadActorState {
     Idle,
     Connected(ConnectedUploadActor),
-    RunningUpload {
-        result: Boxed<(Result<(), PowerSyncError>, ConnectedUploadActor)>,
-    },
-    WaitingForReconnect {
-        timeout: Boxed<ConnectedUploadActor>,
-    },
+    RunningUpload { result: Boxed<ConnectedUploadActor> },
     Stopped,
 }
 
@@ -263,31 +219,61 @@ struct CrudUpload<'a> {
 }
 
 impl<'a> CrudUpload<'a> {
-    pub async fn run(&mut self) -> Result<(), PowerSyncError> {
+    pub async fn run(&mut self) {
         let mut last_item_id = None::<i64>;
 
-        while let Some(item) = self.oldest_crud_item_id().await? {
-            if last_item_id == Some(item) {
-                warn!("{}", Self::DUPLICATE_ITEM_WARNING);
-                return Err(PowerSyncError::argument_error(
-                    "Delaying due to previously encountered CRUD item.",
-                ));
+        // Invoke upload method on connector until there are no remaining CRUD items to upload.
+        loop {
+            match self.upload_step(&mut last_item_id).await {
+                Ok(ControlFlow::Break(_)) => break,
+                Ok(ControlFlow::Continue(_)) => continue,
+                Err(e) => {
+                    last_item_id = None;
+                    info!("CRUD uploads failed, will retry, {e}");
+
+                    self.db
+                        .status
+                        .update(|data| data.set_upload_state(UploadStatus::Error(e)));
+                    self.db.sync_iteration_delay().await;
+                }
+            }
+        }
+    }
+
+    async fn upload_step(
+        &mut self,
+        last_item_id: &mut Option<i64>,
+    ) -> Result<ControlFlow<()>, PowerSyncError> {
+        let Some(item) = self.oldest_crud_item_id().await? else {
+            // Uploading is completed, advance write checkpoint.
+            if let Some(advance_target) = self.sequence_for_checkpoint().await? {
+                let write_checkpoint = self.get_write_checkpoint().await?;
+                advance_target.complete(write_checkpoint, &self.db).await?;
             }
 
-            last_item_id = Some(item);
-            self.db
-                .status
-                .update(|data| data.set_upload_state(UploadStatus::Uploading));
-            self.connector.upload_data().await?;
+            // It's possible that pending CRUD uploads were preventing data from  syncing. So now
+            // that that's completed, notify the download client in case it needs to retry.
+            if let Some(sync) = self.db.sync.upgrade() {
+                sync.mark_crud_uploads_completed().await;
+            }
+
+            return Ok(ControlFlow::Break(()));
+        };
+
+        self.db
+            .status
+            .update(|data| data.set_upload_state(UploadStatus::Uploading));
+        if matches!(*last_item_id, Some(x) if x == item) {
+            warn!("{}", Self::DUPLICATE_ITEM_WARNING);
+            return Err(PowerSyncError::argument_error(
+                "Delaying due to previously encountered CRUD item.",
+            ));
         }
 
-        // Uploading is completed, advance write checkpoint.
-        if let Some(advance_target) = self.sequence_for_checkpoint().await? {
-            let write_checkpoint = self.get_write_checkpoint().await?;
-            advance_target.complete(write_checkpoint, &self.db).await?;
-        }
+        *last_item_id = Some(item);
+        self.connector.upload_data().await?;
 
-        Ok(())
+        Ok(ControlFlow::Continue(()))
     }
 
     async fn oldest_crud_item_id(&self) -> Result<Option<i64>, PowerSyncError> {

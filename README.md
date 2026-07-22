@@ -23,7 +23,7 @@ To start an example:
 3. Compile and run an example here: `cargo run -p egui_todolist`.
 
 ```yaml
-# Sync-rule docs: https://docs.powersync.com/usage/sync-rules
+# Sync Streams docs: https://docs.powersync.com/sync/streams/overview
 streams:
   lists:
     query: SELECT * FROM lists #WHERE owner_id = auth.user_id()
@@ -32,5 +32,5 @@ streams:
     query: SELECT * FROM todos WHERE list_id = subscription.parameter('list') #AND list_id IN (SELECT id FROM lists WHERE owner_id = auth.user_id())
 
 config:
-  edition: 2
+  edition: 3
 ```

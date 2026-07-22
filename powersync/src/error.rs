@@ -17,6 +17,15 @@ pub struct PowerSyncError {
 }
 
 impl PowerSyncError {
+    /// Wrap any error as a PowerSync error to indicate an error in a
+    /// [crate::BackendConnector::upload_data] implementation.
+    pub fn upload_error(inner: impl Error + Send + Sync + 'static) -> Self {
+        RawPowerSyncError::UploadError {
+            source: Box::new(inner),
+        }
+        .into()
+    }
+
     pub(crate) fn argument_error(desc: impl Into<Cow<'static, str>>) -> Self {
         RawPowerSyncError::ArgumentError { desc: desc.into() }.into()
     }
@@ -108,6 +117,11 @@ pub(crate) enum RawPowerSyncError {
     InvalidCredentials,
     #[error("Unexpected HTTP status code from PowerSync service: {code}")]
     UnexpectedStatusCode { code: u16 },
+    #[error("Error in upload_data: {source}")]
+    UploadError {
+        #[source]
+        source: Box<dyn Error + Send + Sync>,
+    },
 }
 
 impl From<ResultCode> for PowerSyncError {
