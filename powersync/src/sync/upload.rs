@@ -308,8 +308,10 @@ impl<'a> CrudUpload<'a> {
         })
     }
 
-    fn ps_crud_sequence(conn: &SqliteConnection) -> Result<Option<i64>, PowerSyncError> {
-        let seq_before = conn.prepare("SELECT seq FROM main.sqlite_sequence WHERE name = ?")?;
+    fn ps_crud_sequence(tx: &TransactionGuard) -> Result<Option<i64>, PowerSyncError> {
+        let seq_before = tx
+            .inner
+            .prepare("SELECT seq FROM main.sqlite_sequence WHERE name = ?")?;
         seq_before.bind_text(1, "ps_crud", Destructor::STATIC)?;
 
         let ResultCode::ROW = seq_before.step()? else {
@@ -322,21 +324,17 @@ impl<'a> CrudUpload<'a> {
     async fn sequence_for_checkpoint(
         &self,
     ) -> Result<Option<PendingCheckpointRequest>, PowerSyncError> {
-        let reader = self.db.reader().await?;
-        let reader = reader.sqlite_connection();
-        {
-            let stmt =
-                reader.prepare("SELECT 1 FROM ps_buckets WHERE name = ? AND target_op = ?")?;
-            stmt.bind_text(1, "$local", Destructor::STATIC)?;
-            stmt.bind_int64(2, MAX_OP_ID)?;
+        let mut reader = self.db.reader().await?;
+        let reader = reader.sqlite_connection_mut();
+        let read_tx = TransactionGuard::new(reader)?;
 
-            let ResultCode::ROW = stmt.step()? else {
-                // Nothing to update.
-                return Ok(None);
-            };
-        }
+        let Some(MAX_OP_ID) = InnerPowerSyncState::target_checkpoint_request_id(&read_tx, None)?
+        else {
+            // Nothing to update.
+            return Ok(None);
+        };
 
-        let seq_before = Self::ps_crud_sequence(reader)?;
+        let seq_before = Self::ps_crud_sequence(&read_tx)?;
         Ok(seq_before.map(|seq_before| PendingCheckpointRequest {
             crud_sequence: seq_before,
         }))
@@ -369,8 +367,8 @@ impl PendingCheckpointRequest {
             return Ok(());
         }
 
-        let seq_after = CrudUpload::ps_crud_sequence(writer.inner)?
-            .expect("sqlite sequence should not be empty");
+        let seq_after =
+            CrudUpload::ps_crud_sequence(&writer)?.expect("sqlite sequence should not be empty");
 
         if seq_after != self.crud_sequence {
             debug!(
@@ -380,7 +378,7 @@ impl PendingCheckpointRequest {
             return Ok(());
         }
 
-        InnerPowerSyncState::set_local_target_op(writer.inner, op_id)?;
+        InnerPowerSyncState::target_checkpoint_request_id(&writer, Some(op_id))?;
 
         writer.commit()?;
         Ok(())

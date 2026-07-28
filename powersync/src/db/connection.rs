@@ -49,7 +49,7 @@ impl SqliteConnection {
     pub fn exec(&self, stmt: &CStr) -> Result<(), PowerSyncError> {
         unsafe {
             // Safety: We know the stmt is null-terminated.
-            self.handle().exec(stmt.as_ptr())
+            self.handle().exec(stmt)
         }
         .map_err(|rc| RawPowerSyncError::RawSqlite {
             code: rc,
