@@ -12,8 +12,8 @@ pub struct CoreExtensionVersion {
 
 impl CoreExtensionVersion {
     /// The minimum version of the core extension supported by the native SDK.
-    pub const MINIMUM: Self = Self::new(0, 4, 7);
-    pub const MAXIMUM_EXCLUSIVE: Self = Self::new(0, 5, 0);
+    pub const MINIMUM: Self = Self::new(0, 5, 1);
+    pub const MAXIMUM_EXCLUSIVE: Self = Self::new(0, 6, 0);
 
     pub const fn new(major: u32, minor: u32, patch: u32) -> Self {
         Self {

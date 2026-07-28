@@ -1,3 +1,7 @@
+## 0.0.7 (unreleased)
+
+- Update PowerSync core extension to version 0.5.1.
+
 ## 0.0.6
 
 - Skip creating `ps_crud` entries when clearing raw tables.

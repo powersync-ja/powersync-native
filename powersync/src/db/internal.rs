@@ -1,4 +1,4 @@
-use crate::db::connection::{SqliteConnection, TransactionGuard, exec_stmt};
+use crate::db::connection::{TransactionGuard, exec_stmt};
 use crate::schema::SchemaOrCustom;
 use crate::{
     db::{
@@ -12,7 +12,7 @@ use crate::{
 use event_listener::EventListener;
 use futures_lite::future::yield_now;
 use futures_lite::{FutureExt, Stream, StreamExt, ready};
-use powersync_sqlite_nostd::{Destructor, ResultCode};
+use powersync_sqlite_nostd::{ColumnType, Destructor, ResultCode};
 use std::sync::{Mutex, Weak};
 use std::time::Duration;
 use std::{
@@ -62,14 +62,17 @@ impl InnerPowerSyncState {
         let pool = &self.env.pool;
         self.did_initialize
             .run(|| async {
-                let conn = pool.writer().await;
-                let conn = conn.sqlite_connection();
+                let mut conn = pool.writer().await;
+                let conn = conn.sqlite_connection_mut();
                 CoreExtensionVersion::check_from_db(conn)?;
 
-                conn.exec(c"SELECT powersync_init()")?;
+                let tx = TransactionGuard::new(conn)?;
+                tx.inner.exec(c"SELECT powersync_init()")?;
 
-                self.update_schema_internal(conn)?;
-                self.status.update(|old| old.resolve_offline_state(conn))?;
+                self.update_schema_internal(&tx)?;
+                self.status
+                    .update(|old| old.resolve_offline_state(tx.inner))?;
+                tx.commit()?;
 
                 Ok(())
             })
@@ -77,13 +80,13 @@ impl InnerPowerSyncState {
             .clone()
     }
 
-    fn update_schema_internal(&self, conn: &SqliteConnection) -> Result<(), PowerSyncError> {
+    fn update_schema_internal(&self, conn: &TransactionGuard) -> Result<(), PowerSyncError> {
         if let SchemaOrCustom::Schema(schema) = self.schema.as_ref() {
             schema.validate()?;
         };
 
         let serialized_schema = serde_json::to_string(&self.schema)?;
-        let stmt = conn.prepare("SELECT powersync_replace_schema(?)")?;
+        let stmt = conn.inner.prepare("SELECT powersync_replace_schema(?)")?;
         // Fine because we drop the statement before the serialized schema
         stmt.bind_text(1, &serialized_schema, Destructor::STATIC)?;
         exec_stmt(stmt)?;
@@ -118,15 +121,29 @@ impl InnerPowerSyncState {
             }
         }
 
-        Self::set_local_target_op(writer.inner, target_op)?;
+        Self::target_checkpoint_request_id(&writer, Some(target_op))?;
         writer.commit()
     }
 
-    pub fn set_local_target_op(writer: &SqliteConnection, op: i64) -> Result<(), PowerSyncError> {
-        let stmt = writer.prepare("UPDATE ps_buckets SET target_op = ? WHERE name = ?")?;
-        stmt.bind_int64(1, op)?;
-        stmt.bind_text(2, "$local", Destructor::STATIC)?;
-        exec_stmt(stmt)
+    pub fn target_checkpoint_request_id(
+        writer: &TransactionGuard,
+        update: Option<i64>,
+    ) -> Result<Option<i64>, PowerSyncError> {
+        let stmt = writer.inner.prepare("SELECT powersync_control(?, ?);")?;
+        stmt.bind_text(1, "target_checkpoint_request_id", Destructor::STATIC)?;
+        if let Some(update) = update {
+            stmt.bind_int64(2, update)?;
+        } else {
+            stmt.bind_null(2)?;
+        }
+        let ResultCode::ROW = stmt.step()? else {
+            panic!("Scalar statement not return a row")
+        };
+
+        Ok(match stmt.column_type(0)? {
+            ColumnType::Integer => Some(stmt.column_int64(0)),
+            _ => None,
+        })
     }
 
     pub async fn reader(&self) -> Result<LeasedConnection, PowerSyncError> {
