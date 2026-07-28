@@ -328,11 +328,11 @@ impl<'a> CrudUpload<'a> {
         let reader = reader.sqlite_connection_mut();
         let read_tx = TransactionGuard::new(reader)?;
 
-        let Some(MAX_OP_ID) = InnerPowerSyncState::target_checkpoint_request_id(&read_tx, None)?
-        else {
+        let current_target = InnerPowerSyncState::target_checkpoint_request_id(&read_tx, None)?;
+        if current_target != Some(MAX_OP_ID) {
             // Nothing to update.
             return Ok(None);
-        };
+        }
 
         let seq_before = Self::ps_crud_sequence(&read_tx)?;
         Ok(seq_before.map(|seq_before| PendingCheckpointRequest {
