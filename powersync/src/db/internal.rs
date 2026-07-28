@@ -137,7 +137,7 @@ impl InnerPowerSyncState {
             stmt.bind_null(2)?;
         }
         let ResultCode::ROW = stmt.step()? else {
-            panic!("Scalar statement not return a row")
+            panic!("Scalar statement did not return a row")
         };
 
         Ok(match stmt.column_type(0)? {
