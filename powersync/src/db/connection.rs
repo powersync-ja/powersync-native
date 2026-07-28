@@ -48,7 +48,7 @@ impl SqliteConnection {
     /// Executes a SQL statement without parameters.
     pub fn exec(&self, stmt: &CStr) -> Result<(), PowerSyncError> {
         unsafe {
-            // Safety: We know the stmt is null-terminated.
+            // Safety: We're not doing anything that could close the connection.
             self.handle().exec(stmt)
         }
         .map_err(|rc| RawPowerSyncError::RawSqlite {
