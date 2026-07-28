@@ -3,7 +3,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use async_task::Task;
@@ -422,5 +422,34 @@ fn upload_retry() {
             .await;
 
         assert!(sync.db.next_crud_transaction().await.unwrap().is_none());
+    });
+}
+
+#[test]
+fn reports_correct_times() {
+    let sync = SyncStreamTest::new();
+    sync.connect();
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        request
+            .send_checkpoint(Checkpoint::single_bucket("a", 0, None))
+            .await;
+        request.send_checkpoint_complete(0, None).await;
+        sync.wait_for_status(|s| !s.is_downloading()).await;
+
+        let stream = sync.db.sync_stream("a", None);
+        let status = sync.db.status();
+        let status = status
+            .for_stream(&stream)
+            .expect("should have stream status");
+        let last_synced_at = status
+            .subscription
+            .last_synced_at()
+            .expect("should have last synced at");
+        let delta = SystemTime::now().duration_since(last_synced_at).unwrap();
+        assert!(delta < Duration::from_secs(5));
     });
 }

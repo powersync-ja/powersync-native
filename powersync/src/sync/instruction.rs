@@ -89,7 +89,7 @@ pub struct Timestamp(pub i64);
 
 impl From<Timestamp> for SystemTime {
     fn from(val: Timestamp) -> Self {
-        let since_epoch = Duration::from_secs(val.0 as u64);
+        let since_epoch = Duration::from_micros(val.0 as u64);
         SystemTime::UNIX_EPOCH + since_epoch
     }
 }
