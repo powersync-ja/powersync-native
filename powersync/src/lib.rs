@@ -3,7 +3,6 @@ pub mod env;
 mod sync;
 mod util;
 
-pub use db::PowerSyncDatabase;
 pub use db::crud::{CrudEntry, CrudTransaction, UpdateType};
 #[cfg(feature = "ffi")]
 pub use db::internal::InnerPowerSyncState;
@@ -11,6 +10,7 @@ pub use db::pool::{ConnectionPool, LeasedConnection};
 pub use db::streams::StreamSubscription;
 pub use db::streams::StreamSubscriptionOptions;
 pub use db::streams::SyncStream;
+pub use db::{PowerSyncDatabase, PowerSyncStatement, PowerSyncTransaction};
 pub use sync::connector::{BackendConnector, PowerSyncCredentials};
 pub use sync::options::SyncOptions;
 pub use sync::status::SyncStatusData;

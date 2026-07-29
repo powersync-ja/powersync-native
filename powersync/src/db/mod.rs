@@ -29,6 +29,10 @@ pub mod schema;
 pub mod streams;
 pub mod watch;
 
+pub use connection::{
+    TransactionGuard as PowerSyncTransaction, TransactionStatement as PowerSyncStatement,
+};
+
 #[derive(Clone)]
 pub struct PowerSyncDatabase {
     sync: Arc<SyncCoordinator>,
@@ -313,6 +317,40 @@ impl PowerSyncDatabase {
     /// Obtains a [LeasedConnection] allowing reading and writing queries.
     pub async fn writer(&self) -> Result<LeasedConnection, PowerSyncError> {
         self.inner.writer().await
+    }
+
+    /// Run a read transaction whose connection and statements cannot escape
+    /// the synchronous callback.
+    ///
+    /// Lease acquisition is asynchronous, but the callback cannot suspend
+    /// while SQLite holds a transaction or WAL read mark.
+    pub async fn read_transaction<T>(
+        &self,
+        operation: impl FnOnce(&mut PowerSyncTransaction<'_>) -> Result<T, PowerSyncError>,
+    ) -> Result<T, PowerSyncError> {
+        let mut connection = self.inner.reader().await?;
+        connection::run_transaction(
+            connection.sqlite_connection_mut(),
+            connection::TransactionMode::Read,
+            operation,
+        )
+    }
+
+    /// Run a write transaction whose connection and statements cannot escape
+    /// the synchronous callback.
+    ///
+    /// Write transactions use `BEGIN IMMEDIATE` so the writer reservation is
+    /// acquired before the callback starts.
+    pub async fn write_transaction<T>(
+        &self,
+        operation: impl FnOnce(&mut PowerSyncTransaction<'_>) -> Result<T, PowerSyncError>,
+    ) -> Result<T, PowerSyncError> {
+        let mut connection = self.inner.writer().await?;
+        connection::run_transaction(
+            connection.sqlite_connection_mut(),
+            connection::TransactionMode::Write,
+            operation,
+        )
     }
 
     /*
