@@ -204,7 +204,9 @@ fn path_to_cstring(p: &Path) -> Result<CString, PowerSyncError> {
 
 #[cfg(not(unix))]
 fn path_to_cstring(p: &Path) -> Result<CString, PowerSyncError> {
-    let s = p.to_str().ok_or_else(|| Error::InvalidPath(p.to_owned()))?;
+    let s = p.to_str().ok_or_else(|| RawPowerSyncError::ArgumentError {
+        desc: format!("Invalid path: {p:?}").into(),
+    })?;
     Ok(
         CString::new(s).map_err(|_| RawPowerSyncError::ArgumentError {
             desc: format!("Invalid path: {p:?}").into(),

@@ -37,3 +37,15 @@ jobs:
 
       - name: Build without rusqlite
         run: cargo build --no-default-features
+
+  windows:
+    name: Check Windows build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install stable Rust
+        run: rustup update stable
+
+      - name: Check PowerSync crate
+        run: cargo check -p powersync --all-targets
