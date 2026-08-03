@@ -1,6 +1,6 @@
-## 0.0.7 (unreleased)
+## 0.0.7
 
-- Update PowerSync core extension to version 0.5.1.
+- Update PowerSync core extension to version 0.5.2.
 
 ## 0.0.6
 
