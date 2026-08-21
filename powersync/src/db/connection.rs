@@ -1,7 +1,9 @@
 use crate::error::{PowerSyncError, RawPowerSyncError};
 use num_traits::cast::FromPrimitive;
 use powersync_sqlite_nostd::bindings::sqlite3_open_v2;
-use powersync_sqlite_nostd::{Connection, ManagedConnection, ManagedStmt, ResultCode, sqlite3};
+use powersync_sqlite_nostd::{
+    Connection, Destructor, ManagedConnection, ManagedStmt, ResultCode, sqlite3,
+};
 use std::ffi::{CStr, CString, c_int};
 use std::mem::MaybeUninit;
 use std::path::Path;
@@ -75,42 +77,239 @@ impl SqliteConnection {
     }
 }
 
-/// Utility for running a block in a transaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TransactionMode {
+    Read,
+    Write,
+}
+
+/// A prepared statement whose lifetime is confined to a scoped transaction.
+///
+/// The raw `ManagedStmt` is deliberately private so a statement or row borrow
+/// cannot escape after the transaction and pool lease have ended.
+pub struct TransactionStatement {
+    inner: ManagedStmt,
+}
+
+impl TransactionStatement {
+    pub fn step(&mut self) -> Result<ResultCode, PowerSyncError> {
+        self.inner.step().map_err(PowerSyncError::from)
+    }
+
+    pub fn execute(&mut self) -> Result<(), PowerSyncError> {
+        while let ResultCode::ROW = self.step()? {}
+        Ok(())
+    }
+
+    pub fn bind_null(&mut self, index: i32) -> Result<(), PowerSyncError> {
+        self.inner.bind_null(index)?;
+        Ok(())
+    }
+
+    pub fn bind_text(&mut self, index: i32, value: &str) -> Result<(), PowerSyncError> {
+        self.inner.bind_text(index, value, Destructor::TRANSIENT)?;
+        Ok(())
+    }
+
+    pub fn bind_blob(&mut self, index: i32, value: &[u8]) -> Result<(), PowerSyncError> {
+        self.inner.bind_blob(index, value, Destructor::TRANSIENT)?;
+        Ok(())
+    }
+
+    pub fn bind_int64(&mut self, index: i32, value: i64) -> Result<(), PowerSyncError> {
+        self.inner.bind_int64(index, value)?;
+        Ok(())
+    }
+
+    pub fn bind_int(&mut self, index: i32, value: i32) -> Result<(), PowerSyncError> {
+        self.inner.bind_int(index, value)?;
+        Ok(())
+    }
+
+    pub fn bind_double(&mut self, index: i32, value: f64) -> Result<(), PowerSyncError> {
+        self.inner.bind_double(index, value)?;
+        Ok(())
+    }
+
+    pub fn column_text(&self, index: i32) -> Result<&str, PowerSyncError> {
+        self.inner.column_text(index).map_err(PowerSyncError::from)
+    }
+
+    pub fn column_blob(&self, index: i32) -> Result<&[u8], PowerSyncError> {
+        self.inner.column_blob(index).map_err(PowerSyncError::from)
+    }
+
+    pub fn column_int64(&self, index: i32) -> i64 {
+        self.inner.column_int64(index)
+    }
+
+    pub fn column_int(&self, index: i32) -> i32 {
+        self.inner.column_int(index)
+    }
+
+    pub fn column_double(&self, index: i32) -> f64 {
+        self.inner.column_double(index)
+    }
+}
+
+/// A transaction whose commit and rollback lifecycle is owned by the SDK.
 pub struct TransactionGuard<'a> {
-    pub inner: &'a mut SqliteConnection,
+    pub(crate) inner: &'a mut SqliteConnection,
     active: bool,
 }
 
 impl<'a> TransactionGuard<'a> {
-    pub fn new(connection: &'a mut SqliteConnection) -> Result<Self, PowerSyncError> {
+    /// Compatibility constructor for existing SDK internals. New public
+    /// callers should use `PowerSyncDatabase::{read,write}_transaction`.
+    pub(crate) fn new(connection: &'a mut SqliteConnection) -> Result<Self, PowerSyncError> {
+        Self::with_mode(connection, TransactionMode::Read)
+    }
+
+    pub(crate) fn with_mode(
+        connection: &'a mut SqliteConnection,
+        mode: TransactionMode,
+    ) -> Result<Self, PowerSyncError> {
         if !unsafe { connection.handle().get_autocommit() } {
             return Err(PowerSyncError::argument_error(
                 "Connection already in transaction",
             ));
         }
 
-        connection.exec(c"BEGIN")?;
+        connection.exec(match mode {
+            TransactionMode::Read => c"BEGIN",
+            TransactionMode::Write => c"BEGIN IMMEDIATE",
+        })?;
         Ok(TransactionGuard {
             inner: connection,
             active: true,
         })
     }
 
-    pub fn commit(mut self) -> Result<(), PowerSyncError> {
-        self.active = false;
-        self.inner.exec(c"COMMIT")
+    /// Prepare and use one statement without allowing it to escape the callback.
+    ///
+    /// ```compile_fail
+    /// use powersync::{PowerSyncStatement, PowerSyncTransaction};
+    /// use powersync::error::PowerSyncError;
+    ///
+    /// fn escape<'a>(
+    ///     transaction: &'a mut PowerSyncTransaction<'a>,
+    /// ) -> Result<&'a mut PowerSyncStatement, PowerSyncError> {
+    ///     transaction.with_statement("SELECT 1", |statement| Ok(statement))
+    /// }
+    /// ```
+    pub fn with_statement<T>(
+        &mut self,
+        sql: &str,
+        operation: impl for<'statement> FnOnce(
+            &'statement mut TransactionStatement,
+        ) -> Result<T, PowerSyncError>,
+    ) -> Result<T, PowerSyncError> {
+        reject_transaction_control(sql)?;
+        let statement = self.inner.prepare(sql)?;
+        let mut statement = TransactionStatement { inner: statement };
+        operation(&mut statement)
     }
 
-    fn rollback_internal(&mut self) -> Result<(), PowerSyncError> {
-        self.inner.exec(c"ROLLBACK")
+    /// Execute one statement inside this transaction.
+    pub fn execute(&mut self, sql: &str) -> Result<(), PowerSyncError> {
+        self.with_statement(sql, TransactionStatement::execute)
+    }
+
+    /// Compatibility exit for existing SDK internals.
+    pub(crate) fn commit(mut self) -> Result<(), PowerSyncError> {
+        self.commit_in_place()
+    }
+
+    fn commit_in_place(&mut self) -> Result<(), PowerSyncError> {
+        if !self.active {
+            return Ok(());
+        }
+        self.inner.exec(c"COMMIT")?;
+        self.active = false;
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<(), PowerSyncError> {
+        if !self.active {
+            return Ok(());
+        }
+        self.inner.exec(c"ROLLBACK")?;
+        self.active = false;
+        Ok(())
     }
 }
 
 impl Drop for TransactionGuard<'_> {
     fn drop(&mut self) {
-        if self.active {
-            // Rollback if the transaction hasn't explicitly been committed.
-            let _ = self.rollback_internal();
+        if self.active
+            && let Err(error) = self.rollback()
+        {
+            log::error!("Could not roll back scoped PowerSync transaction: {error}");
+        }
+    }
+}
+
+fn reject_transaction_control(sql: &str) -> Result<(), PowerSyncError> {
+    let Some(keyword) = first_sql_keyword(sql) else {
+        return Err(PowerSyncError::argument_error(
+            "Scoped transaction statement is empty",
+        ));
+    };
+
+    if matches!(
+        keyword.as_str(),
+        "BEGIN" | "COMMIT" | "END" | "ROLLBACK" | "SAVEPOINT" | "RELEASE"
+    ) {
+        return Err(PowerSyncError::argument_error(
+            "Transaction control is owned by the scoped transaction API",
+        ));
+    }
+
+    Ok(())
+}
+
+fn first_sql_keyword(mut sql: &str) -> Option<String> {
+    loop {
+        sql = sql.trim_start_matches(|character: char| {
+            character.is_ascii_whitespace() || character == '\u{feff}'
+        });
+        if let Some(rest) = sql.strip_prefix("--") {
+            sql = rest.split_once('\n').map_or("", |(_, remaining)| remaining);
+            continue;
+        }
+        if let Some(rest) = sql.strip_prefix("/*") {
+            sql = rest.split_once("*/").map_or("", |(_, remaining)| remaining);
+            continue;
+        }
+        break;
+    }
+
+    let keyword = sql
+        .bytes()
+        .take_while(u8::is_ascii_alphabetic)
+        .collect::<Vec<_>>();
+    (!keyword.is_empty()).then(|| String::from_utf8_lossy(&keyword).to_ascii_uppercase())
+}
+
+pub(crate) fn run_transaction<T>(
+    connection: &mut SqliteConnection,
+    mode: TransactionMode,
+    operation: impl FnOnce(&mut TransactionGuard<'_>) -> Result<T, PowerSyncError>,
+) -> Result<T, PowerSyncError> {
+    let mut transaction = TransactionGuard::with_mode(connection, mode)?;
+    match operation(&mut transaction) {
+        Ok(value) => {
+            transaction.commit_in_place()?;
+            Ok(value)
+        }
+        Err(original) => {
+            if let Err(rollback_error) = transaction.rollback() {
+                log::error!(
+                    "Could not roll back scoped PowerSync transaction after error: \
+                     {rollback_error}"
+                );
+            }
+            Err(original)
         }
     }
 }
@@ -191,6 +390,10 @@ pub fn exec_stmt(stmt: ManagedStmt) -> Result<(), PowerSyncError> {
 
     Ok(())
 }
+
+#[cfg(all(test, feature = "rusqlite"))]
+#[path = "connection_tests.rs"]
+mod tests;
 
 #[cfg(unix)]
 fn path_to_cstring(p: &Path) -> Result<CString, PowerSyncError> {
