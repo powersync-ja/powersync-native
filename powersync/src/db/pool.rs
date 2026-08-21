@@ -214,6 +214,17 @@ impl Drop for OwnedConnectionLease {
             OwnedConnectionLease::Writer { connection, pool } => {
                 // Send update notifications for writes made on this connection while leased.
                 let _ = pool.take_update_notifications(connection);
+                match connection.clean_for_pool() {
+                    Ok(reset) if reset > 0 => {
+                        log::warn!(
+                            "Reset {reset} busy SQLite statement(s) before releasing writer"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        log::error!("Could not clean writer before pool release: {error}");
+                    }
+                }
             }
             OwnedConnectionLease::Reader { connection, pool } => {
                 let connection = std::mem::replace(connection, MaybeUninit::uninit());
@@ -221,6 +232,18 @@ impl Drop for OwnedConnectionLease {
                     // safety: Only dropped here
                     connection.assume_init()
                 };
+
+                match connection.clean_for_pool() {
+                    Ok(reset) if reset > 0 => {
+                        log::warn!(
+                            "Reset {reset} busy SQLite statement(s) before releasing reader"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        log::error!("Could not clean reader before pool release: {error}");
+                    }
+                }
 
                 pool.state
                     .readers
