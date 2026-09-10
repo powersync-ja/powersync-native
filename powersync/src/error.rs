@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::{borrow::Cow, fmt::Display};
 use thiserror::Error;
 
+use crate::sync::checkpoint::CheckpointError;
+
 pub type Result<T> = std::result::Result<T, PowerSyncError>;
 
 /// A [RawPowerSyncError], but boxed.
@@ -122,6 +124,8 @@ pub(crate) enum RawPowerSyncError {
         #[source]
         source: Box<dyn Error + Send + Sync>,
     },
+    #[error("Checkpoint error: {error}")]
+    Checkpoint { error: CheckpointError },
 }
 
 impl From<ResultCode> for PowerSyncError {

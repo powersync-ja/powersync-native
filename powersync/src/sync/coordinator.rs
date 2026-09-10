@@ -10,6 +10,7 @@ use crate::{
     error::PowerSyncError,
     sync::{
         download::{DownloadEvent, download_loop},
+        state::CheckpointStateSignals,
         streams::ChangedSyncSubscriptions,
         upload::crud_upload_loop,
     },
@@ -133,6 +134,7 @@ impl Drop for SyncTasks {
 
 #[derive(Clone)]
 pub struct SyncChannels {
+    pub checkpoints: Arc<CheckpointStateSignals>,
     local_download_events: Sender<DownloadEvent>,
     trigger_upload: Sender<()>,
 }
@@ -144,6 +146,7 @@ impl SyncChannels {
 
         (
             Self {
+                checkpoints: Default::default(),
                 local_download_events: download_send,
                 trigger_upload: uploads_send,
             },

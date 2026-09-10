@@ -11,6 +11,11 @@ use powersync_sqlite_nostd::{Destructor, ResultCode};
 use crate::{
     SyncOptions,
     db::connection::{SqliteConnection, TransactionGuard},
+    error::RawPowerSyncError,
+    sync::{
+        download::http::checkpoint_request, instruction::CheckpointRequestPayload,
+        options::CheckpointMode,
+    },
 };
 use crate::{
     db::internal::InnerPowerSyncState,
@@ -141,7 +146,28 @@ impl<'a> CrudUpload<'a> {
         };
 
         let credentials = self.options.connector.fetch_credentials().await?;
-        write_checkpoint(&self.db, &client_id, credentials).await
+
+        match self.options.checkpoints {
+            CheckpointMode::Legacy => write_checkpoint(&self.db, &client_id, credentials).await,
+            CheckpointMode::Requests(_) => {
+                self.channels
+                    .checkpoints
+                    .wait_for_checkpoint_requests_ready(true)
+                    .await
+                    .map_err(|e| RawPowerSyncError::Checkpoint { error: e })?;
+
+                let checkpoint_request_id = self.db.next_checkpoint_request_id().await?;
+                checkpoint_request(
+                    &self.db,
+                    &CheckpointRequestPayload {
+                        client_id,
+                        checkpoint_request_id,
+                    },
+                    credentials,
+                )
+                .await
+            }
+        }
     }
 
     fn read_oldest_crud_item_id(conn: &SqliteConnection) -> Result<Option<i64>, PowerSyncError> {

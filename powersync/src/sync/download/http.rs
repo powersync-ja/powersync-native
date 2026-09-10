@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::http::{Request, Response};
+use crate::sync::instruction::CheckpointRequestPayload;
 use crate::util::LineSplitter;
 use crate::{
     db::internal::InnerPowerSyncState,
@@ -96,6 +97,50 @@ pub async fn write_checkpoint(
 
     let response: WriteCheckpointResponse = serde_json::from_slice(&body_bytes)?;
     Ok(response.data.write_checkpoint)
+}
+
+/// Posts a checkpoint request to the PowerSync sync service.
+pub async fn checkpoint_request(
+    db: &InnerPowerSyncState,
+    body: &CheckpointRequestPayload,
+    auth: PowerSyncCredentials,
+) -> Result<i64, PowerSyncError> {
+    let url = auth.parsed_endpoint("sync/checkpoint-request")?;
+
+    let body = serde_json::to_vec(body)?;
+    let request = Request {
+        method: "POST",
+        url,
+        headers: {
+            let mut headers: Vec<(&str, Cow<'_, str>)> = vec![];
+            headers.push(("Content-Type", "application/json".into()));
+            headers.push(("Authorization", format!("Token {}", auth.token).into()));
+            headers.push(("Accept", "application/json".into()));
+
+            headers
+        },
+        body: Some(body),
+    };
+
+    let response = db.env.client.send(request).await?;
+    check_ok(response.status)?;
+
+    #[derive(Deserialize)]
+    struct CheckpointRequestResponse {
+        data: CheckpointData,
+    }
+
+    #[serde_as]
+    #[derive(Deserialize)]
+    struct CheckpointData {
+        #[serde_as(as = "DisplayFromStr")]
+        checkpoint_request_id: i64,
+    }
+
+    let body_bytes = response.body.read_fully().await?;
+
+    let response: CheckpointRequestResponse = serde_json::from_slice(&body_bytes)?;
+    Ok(response.data.checkpoint_request_id)
 }
 
 fn check_ok(code: u16) -> Result<(), PowerSyncError> {

@@ -3,6 +3,7 @@ mod sync_iteration;
 
 use std::sync::Arc;
 
+use futures_lite::future;
 use log::warn;
 pub use sync_iteration::{DownloadClient, DownloadEvent};
 
@@ -14,6 +15,10 @@ pub async fn download_loop(
     options: SyncOptions,
     events: async_channel::Receiver<DownloadEvent>,
 ) {
+    scopeguard::defer! {
+        channels.checkpoints.disconnected();
+    };
+
     loop {
         let download = DownloadClient::new(db.clone(), &channels, &events, &options);
         let delay_retry = match download.run().await {
@@ -26,8 +31,9 @@ pub async fn download_loop(
             }
         };
 
+        let iteration_ended = channels.checkpoints.download_iteration_ended();
         if delay_retry {
-            options.retry_delay(&db.env).await
+            future::or(options.retry_delay(&db.env), iteration_ended).await
         }
     }
 }

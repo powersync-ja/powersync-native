@@ -24,6 +24,7 @@ rusqlite = ["dep:rusqlite"]
 ffi = []
 
 [dependencies]
+async-broadcast = "0.7"
 async-channel = "2.5.0"
 async-lock = "3.4.1"
 async-executor = { version = "1.14.0", optional = true }
