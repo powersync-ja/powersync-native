@@ -93,6 +93,61 @@ fn dropping_database_completes_actors() {
 }
 
 #[test]
+fn reconnect_uploads_pending_writes_after_an_early_trigger() {
+    struct Connector {
+        db: PowerSyncDatabase,
+        uploads: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl BackendConnector for Connector {
+        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
+            TestConnector.fetch_credentials().await
+        }
+
+        async fn upload_data(&self) -> Result<(), PowerSyncError> {
+            while let Some(tx) = self.db.next_crud_transaction().await? {
+                self.uploads.fetch_add(1, Ordering::SeqCst);
+                tx.complete().await?;
+            }
+            Ok(())
+        }
+    }
+
+    future::block_on(async {
+        let test = DatabaseTest::new();
+        let db = test.in_memory_database();
+        powersync_test_utils::execute(
+            &db,
+            "INSERT INTO users (id, name) VALUES ('1', 'offline')",
+            [],
+        )
+        .await;
+        let uploads = Arc::new(AtomicUsize::new(0));
+        let mut actors = db.async_tasks().spawn_with(|task| task);
+        let mut upload = actors.pop().unwrap();
+        let mut download = actors.pop().unwrap();
+        let mut connect = Box::pin(db.connect(SyncOptions::new(Connector {
+            db: db.clone(),
+            uploads: uploads.clone(),
+        })));
+
+        // Let the download actor's upload trigger arrive before the upload
+        // actor receives Connect. No new writes should be needed afterward.
+        assert!(future::poll_once(connect.as_mut()).await.is_none());
+        assert!(future::poll_once(&mut download).await.is_none());
+        assert!(future::poll_once(&mut upload).await.is_none());
+        assert!(future::poll_once(&mut download).await.is_none());
+        assert!(future::poll_once(connect.as_mut()).await.is_none());
+        assert!(future::poll_once(&mut upload).await.is_none());
+        assert!(future::poll_once(connect.as_mut()).await.is_some());
+
+        assert_eq!(uploads.load(Ordering::SeqCst), 1);
+        assert!(db.next_crud_transaction().await.unwrap().is_none());
+    });
+}
+
+#[test]
 fn can_disable_default_stream() {
     let sync = SyncStreamTest::new();
     sync.connect_options(|o| o.set_include_default_streams(false));
