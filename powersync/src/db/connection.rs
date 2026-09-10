@@ -97,8 +97,9 @@ impl<'a> TransactionGuard<'a> {
     }
 
     pub fn commit(mut self) -> Result<(), PowerSyncError> {
+        self.inner.exec(c"COMMIT")?;
         self.active = false;
-        self.inner.exec(c"COMMIT")
+        Ok(())
     }
 
     fn rollback_internal(&mut self) -> Result<(), PowerSyncError> {
@@ -212,4 +213,43 @@ fn path_to_cstring(p: &Path) -> Result<CString, PowerSyncError> {
             desc: format!("Invalid path: {p:?}").into(),
         })?,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use powersync_sqlite_nostd::bindings::{SQLITE_OPEN_CREATE, SQLITE_OPEN_READWRITE};
+
+    #[test]
+    fn failed_commit_rolls_back_before_reusing_connection() {
+        let mut connection = SqliteConnection::from(
+            RawSqliteConnection::open(c":memory:", SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)
+                .unwrap(),
+        );
+        connection
+            .exec(
+                c"PRAGMA foreign_keys = ON;
+                CREATE TABLE parents (id INTEGER PRIMARY KEY);
+                CREATE TABLE children (parent_id INTEGER REFERENCES parents(id)
+                    DEFERRABLE INITIALLY DEFERRED);",
+            )
+            .unwrap();
+
+        let tx = TransactionGuard::new(&mut connection).unwrap();
+        tx.inner.exec(c"INSERT INTO children VALUES (1)").unwrap();
+        assert!(tx.commit().is_err());
+
+        let tx = TransactionGuard::new(&mut connection).unwrap();
+        let count = tx.inner.prepare("SELECT count(*) FROM children").unwrap();
+        assert_eq!(count.step().unwrap(), ResultCode::ROW);
+        assert_eq!(count.column_int64(0), 0);
+        drop(count);
+        tx.inner
+            .exec(
+                c"INSERT INTO parents VALUES (1);
+            INSERT INTO children VALUES (1)",
+            )
+            .unwrap();
+        tx.commit().unwrap();
+    }
 }
