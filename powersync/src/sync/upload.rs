@@ -60,7 +60,7 @@ impl UploadActor {
             .env
             .pool
             .update_notifiers()
-            .listen(ListenerConfiguration::if_matches(tables, false));
+            .listen(ListenerConfiguration::if_matches(tables, true));
         ConnectedUploadActor {
             connector,
             crud_stream: stream.map(|_| ()).boxed(),
