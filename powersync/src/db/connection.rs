@@ -5,7 +5,7 @@ use powersync_sqlite_nostd::{Connection, ManagedConnection, ManagedStmt, ResultC
 use std::ffi::{CStr, CString, c_int};
 use std::mem::MaybeUninit;
 use std::path::Path;
-use std::ptr::null;
+use std::ptr::{null, null_mut};
 
 /// The SQLite connection used by the PowerSync Rust SDK.
 ///
@@ -72,6 +72,43 @@ impl SqliteConnection {
             }
             .into()
         })
+    }
+
+    /// Restore SQLite's connection-level invariants before returning a handle
+    /// to the pool.
+    ///
+    /// A stepped statement can own an implicit read transaction while
+    /// `sqlite3_get_autocommit()` still returns true. Resetting every busy
+    /// statement is therefore required before the autocommit check.
+    pub(crate) fn clean_for_pool(&self) -> Result<usize, PowerSyncError> {
+        use powersync_sqlite_nostd::bindings::{
+            sqlite3_next_stmt, sqlite3_reset, sqlite3_stmt_busy,
+        };
+
+        let mut reset_statements = 0;
+        unsafe {
+            // Safety: pool release has exclusive ownership of the leased
+            // connection. These APIs inspect or reset statements without
+            // closing the connection.
+            let db = self.handle();
+            let mut statement = sqlite3_next_stmt(db, null_mut());
+            while !statement.is_null() {
+                let next = sqlite3_next_stmt(db, statement);
+                if sqlite3_stmt_busy(statement) != 0 {
+                    // sqlite3_reset returns the statement's prior result code,
+                    // not whether the reset itself released the VM.
+                    let _ = sqlite3_reset(statement);
+                    reset_statements += 1;
+                }
+                statement = next;
+            }
+
+            if !db.get_autocommit() {
+                self.exec(c"ROLLBACK")?;
+            }
+        }
+
+        Ok(reset_statements)
     }
 }
 
