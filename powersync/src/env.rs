@@ -4,6 +4,7 @@ use crate::http::HttpClient;
 use num_traits::FromPrimitive;
 use powersync_core::powersync_init_static;
 use powersync_sqlite_nostd::ResultCode;
+use std::sync::Arc;
 use std::{pin::Pin, time::Duration};
 
 /// All external dependencies required for the PowerSync SDK.
@@ -17,19 +18,15 @@ pub struct PowerSyncEnvironment {
     /// The [ConnectionPool] used to obtain connections for queries asynchronously.
     pub(crate) pool: ConnectionPool,
     /// The [Timer] implementation used to delay sync iterations after errors.
-    pub(crate) timer: &'static (dyn Timer + Send + Sync),
+    pub(crate) timer: Arc<dyn Timer>,
 }
 
 impl PowerSyncEnvironment {
-    pub fn custom<C: HttpClient>(
-        client: C,
-        pool: ConnectionPool,
-        timer: &'static (dyn Timer + Send + Sync),
-    ) -> Self {
+    pub fn custom<C: HttpClient, T: Timer>(client: C, pool: ConnectionPool, timer: T) -> Self {
         Self {
             client: Box::new(client),
             pool,
-            timer,
+            timer: Arc::new(timer),
         }
     }
 
@@ -50,7 +47,7 @@ impl PowerSyncEnvironment {
 
     /// A [Timer] implementation based on [async_io::Timer].
     #[cfg(feature = "smol")]
-    pub fn async_io_timer() -> &'static (dyn Timer + Send + Sync) {
+    pub fn async_io_timer() -> impl Timer {
         use async_io::Timer as PlatformTimer;
 
         struct AsyncIoTimer;
@@ -64,12 +61,12 @@ impl PowerSyncEnvironment {
                 .boxed()
             }
         }
-        &AsyncIoTimer
+        AsyncIoTimer
     }
 
     /// A [Timer] implementation based on [tokio::time::sleep].
     #[cfg(feature = "tokio")]
-    pub fn tokio_timer() -> &'static (dyn Timer + Send + Sync) {
+    pub fn tokio_timer() -> impl Timer {
         use tokio::time::sleep;
 
         struct TokioTimer;
@@ -80,7 +77,7 @@ impl PowerSyncEnvironment {
                 sleep(duration).boxed()
             }
         }
-        &TokioTimer
+        TokioTimer
     }
 }
 
@@ -90,7 +87,7 @@ impl PowerSyncEnvironment {
 /// Because the native PowerSync SDK is executor-agnostic, it can't use a builtin function to retry
 /// sync after a delay to recover from errors. This trait, as part of the [PowerSyncEnvironment],
 /// is thus used to schedule the delay.
-pub trait Timer {
+pub trait Timer: Send + Sync + 'static {
     /// Returns a future that returns [Poll::Pending] when being polled the first time and schedules
     /// the context's waker to be woken after the specified `duration`.
     fn delay_once(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send>>;

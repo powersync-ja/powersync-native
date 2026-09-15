@@ -1,6 +1,13 @@
-use std::{sync::Arc, vec};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
+    time::Duration,
+    vec,
+};
 
 use async_executor::Executor;
+use futures_lite::FutureExt;
 use log::LevelFilter;
 use powersync::{
     env::{PowerSyncEnvironment, Timer},
@@ -19,6 +26,7 @@ pub mod sync_line;
 pub struct DatabaseTest {
     pub dir: TempDir,
     pub http: Arc<MockSyncService>,
+    timer: Arc<Mutex<MockTimer>>,
     pub ex: Executor<'static>,
 }
 
@@ -32,6 +40,7 @@ impl Default for DatabaseTest {
         Self {
             dir: TempDir::new("powersync_rust").expect("should create test directory"),
             http: Arc::new(MockSyncService::new()),
+            timer: Default::default(),
             ex: Executor::new(),
         }
     }
@@ -65,21 +74,81 @@ impl DatabaseTest {
         PowerSyncDatabase::new(self.in_memory(), Self::default_schema())
     }
 
+    pub fn advance_time(&self, duration: Duration) {
+        let mut state = self.timer.lock().unwrap();
+        let end_timestamp = state.time_passed + duration;
+        state.time_passed = end_timestamp;
+
+        while let Some((_, waker)) = state
+            .scheduled
+            .pop_front_if(|&mut (time, _)| time <= end_timestamp)
+        {
+            waker.wake();
+        }
+
+        drop(state);
+
+        // Drive async tasks until idle
+        while self.ex.try_tick() {}
+    }
+
     fn env(&self, pool: ConnectionPool) -> PowerSyncEnvironment {
         PowerSyncEnvironment::powersync_auto_extension().expect("should load core extension");
 
-        struct DisabledTimer;
+        let timer = self.timer.clone();
 
-        impl Timer for DisabledTimer {
+        struct TestTimer {
+            state: Arc<Mutex<MockTimer>>,
+        }
+
+        struct TestDelay {
+            state: Arc<Mutex<MockTimer>>,
+            end_timestamp: Duration,
+        }
+
+        impl Timer for TestTimer {
             fn delay_once(
                 &self,
-                _duration: std::time::Duration,
+                duration: Duration,
             ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
-                panic!("Tests should not run into a delay")
+                let state = self.state.lock().unwrap();
+                let end_timestamp = state.time_passed + duration;
+
+                TestDelay {
+                    state: self.state.clone(),
+                    end_timestamp,
+                }
+                .boxed()
             }
         }
 
-        PowerSyncEnvironment::custom(self.http.clone().client(), pool, &DisabledTimer)
+        impl Future for TestDelay {
+            type Output = ();
+
+            fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                let mut state = self.state.lock().unwrap();
+                if state.time_passed >= self.end_timestamp {
+                    return Poll::Ready(());
+                }
+
+                let search = state
+                    .scheduled
+                    .binary_search_by_key(&self.end_timestamp, |&(ts, _)| ts);
+
+                let schedule = (self.end_timestamp, cx.waker().clone());
+                state.scheduled.insert(
+                    match search {
+                        Ok(existing) => existing + 1,
+                        Err(expected_index) => expected_index,
+                    },
+                    schedule,
+                );
+
+                Poll::Pending
+            }
+        }
+
+        PowerSyncEnvironment::custom(self.http.clone().client(), pool, TestTimer { state: timer })
     }
 
     pub fn default_schema() -> Schema {
@@ -88,6 +157,12 @@ impl DatabaseTest {
 
         schema
     }
+}
+
+#[derive(Default)]
+struct MockTimer {
+    time_passed: Duration,
+    scheduled: VecDeque<(Duration, Waker)>,
 }
 
 /// Runs a query and returns rows as a `serde_json` array.

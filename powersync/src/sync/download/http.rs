@@ -188,7 +188,7 @@ mod tests {
     fn first_event(client: impl HttpClient) -> Result<Option<DownloadEvent>, PowerSyncError> {
         PowerSyncEnvironment::powersync_auto_extension().unwrap();
         let pool = ConnectionPool::single_connection(Connection::open_in_memory().unwrap());
-        let environment = PowerSyncEnvironment::custom(client, pool, &UnusedTimer);
+        let environment = PowerSyncEnvironment::custom(client, pool, UnusedTimer);
         let coordinator = Arc::new(SyncCoordinator::default());
         let db = Arc::new(InnerPowerSyncState::new(
             environment,

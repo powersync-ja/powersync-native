@@ -75,6 +75,14 @@ impl DownloadActor {
         };
     }
 
+    fn retry_delay(&self) -> Boxed<()> {
+        if let Some(ref options) = self.options {
+            options.retry_delay(&self.db.env).boxed()
+        } else {
+            async {}.boxed()
+        }
+    }
+
     async fn handle_event(&mut self) {
         match &mut self.state {
             DownloadActorState::Idle => {
@@ -176,18 +184,15 @@ impl DownloadActor {
                         let timeout = if close.hide_disconnect {
                             async {}.boxed()
                         } else {
-                            let db = self.db.clone();
-
-                            async move { db.sync_iteration_delay().await }.boxed()
+                            self.retry_delay()
                         };
 
                         self.state = DownloadActorState::WaitingForReconnect { timeout }
                     }
                     Event::SyncIterationError(e) => {
                         self.db.status.update(|status| status.set_download_error(e));
-                        let db = self.db.clone();
                         self.state = DownloadActorState::WaitingForReconnect {
-                            timeout: async move { db.sync_iteration_delay().await }.boxed(),
+                            timeout: self.retry_delay(),
                         }
                     }
                 }

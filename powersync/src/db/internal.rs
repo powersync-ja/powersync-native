@@ -10,11 +10,9 @@ use crate::{
     util::SharedFuture,
 };
 use event_listener::EventListener;
-use futures_lite::future::yield_now;
 use futures_lite::{FutureExt, Stream, StreamExt, ready};
 use powersync_sqlite_nostd::{ColumnType, Destructor, ResultCode};
-use std::sync::{Mutex, Weak};
-use std::time::Duration;
+use std::sync::Weak;
 use std::{
     pin::Pin,
     sync::Arc,
@@ -38,7 +36,6 @@ pub struct InnerPowerSyncState {
     /// reference to [InnerPowerSyncState], we only keep a weak reference here to ensure we can drop
     /// actors through the channels owned by [SyncCoordinator].
     pub(crate) sync: Weak<SyncCoordinator>,
-    pub(crate) retry_delay: Mutex<Option<Duration>>,
 }
 
 impl InnerPowerSyncState {
@@ -53,7 +50,6 @@ impl InnerPowerSyncState {
             schema: Arc::new(schema),
             status: SyncStatus::new(),
             current_streams: SyncStreamTracker::default(),
-            retry_delay: Default::default(),
             sync: Arc::downgrade(sync),
         }
     }
@@ -154,21 +150,6 @@ impl InnerPowerSyncState {
     pub async fn writer(&self) -> Result<LeasedConnection, PowerSyncError> {
         self.initialize().await?;
         Ok(self.env.pool.writer().await)
-    }
-
-    pub async fn sync_iteration_delay(&self) {
-        let delay = {
-            let guard = self.retry_delay.lock().unwrap();
-            *guard
-        };
-
-        if let Some(delay) = delay
-            && delay > Duration::ZERO
-        {
-            self.env.timer.delay_once(delay).await
-        } else {
-            yield_now().await
-        }
     }
 
     pub fn watch_status<'a>(&'a self) -> impl Stream<Item = Arc<SyncStatusData>> + 'a {

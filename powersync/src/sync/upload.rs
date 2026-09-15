@@ -7,11 +7,13 @@ use futures_lite::{
 use log::{debug, info, warn};
 use powersync_sqlite_nostd::{Destructor, ResultCode};
 
-use crate::db::connection::{SqliteConnection, TransactionGuard};
 use crate::db::watch::ListenerConfiguration;
 use crate::sync::coordinator::SyncCoordinator;
 use crate::{
-    BackendConnector,
+    SyncOptions,
+    db::connection::{SqliteConnection, TransactionGuard},
+};
+use crate::{
     db::internal::InnerPowerSyncState,
     error::PowerSyncError,
     sync::{
@@ -21,7 +23,7 @@ use crate::{
 };
 
 pub enum UploadActorCommand {
-    Connect(Arc<dyn BackendConnector>),
+    Connect(SyncOptions),
     TriggerCrudUpload,
     Disconnect,
 }
@@ -51,7 +53,7 @@ impl UploadActor {
 
     fn connected_state(
         db: &Arc<InnerPowerSyncState>,
-        connector: Arc<dyn BackendConnector>,
+        options: SyncOptions,
     ) -> ConnectedUploadActor {
         let mut tables = HashSet::new();
         tables.insert("ps_crud".to_string());
@@ -62,7 +64,7 @@ impl UploadActor {
             .update_notifiers()
             .listen(ListenerConfiguration::if_matches(tables, false));
         ConnectedUploadActor {
-            connector,
+            options,
             crud_stream: stream.map(|_| ()).boxed(),
         }
     }
@@ -181,7 +183,7 @@ impl UploadActor {
         UploadActorState::RunningUpload {
             result: async move {
                 let mut upload = CrudUpload {
-                    connector: state.connector.as_ref(),
+                    options: &state.options,
                     db,
                 };
                 upload.run().await;
@@ -207,14 +209,13 @@ impl UploadActorState {
 }
 
 struct ConnectedUploadActor {
-    /// The connector to use when uploading changes.
-    connector: Arc<dyn BackendConnector>,
+    options: SyncOptions,
     /// A stream emitting changes when the `ps_crud` table is updated locally.
     crud_stream: futures_lite::stream::Boxed<()>,
 }
 
 struct CrudUpload<'a> {
-    connector: &'a dyn BackendConnector,
+    options: &'a SyncOptions,
     db: Arc<InnerPowerSyncState>,
 }
 
@@ -234,7 +235,7 @@ impl<'a> CrudUpload<'a> {
                     self.db
                         .status
                         .update(|data| data.set_upload_state(UploadStatus::Error(e)));
-                    self.db.sync_iteration_delay().await;
+                    self.options.retry_delay(&self.db.env).await;
                 }
             }
         }
@@ -271,7 +272,7 @@ impl<'a> CrudUpload<'a> {
         }
 
         *last_item_id = Some(item);
-        self.connector.upload_data().await?;
+        self.options.connector.upload_data().await?;
 
         Ok(ControlFlow::Continue(()))
     }
@@ -295,7 +296,7 @@ impl<'a> CrudUpload<'a> {
             stmt.column_text(0)?.to_string()
         };
 
-        let credentials = self.connector.fetch_credentials().await?;
+        let credentials = self.options.connector.fetch_credentials().await?;
         write_checkpoint(&self.db, &client_id, credentials).await
     }
 

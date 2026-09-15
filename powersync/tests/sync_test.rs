@@ -496,3 +496,36 @@ fn reports_correct_times() {
         assert!(delta < Duration::from_secs(5));
     });
 }
+
+#[test]
+fn reconnects_on_failure() {
+    let sync = SyncStreamTest::new();
+    sync.connect_options(|options| {
+        options.with_retry_delay(Duration::from_hours(1));
+    });
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        // Send a line causing an error
+        request
+            .channel
+            .send(SyncLine::Custom(json!("invalid sync line")))
+            .await
+            .unwrap();
+
+        sync.wait_for_status(|s| s.download_error().is_some()).await;
+    });
+
+    let task = sync.test.ex.spawn({
+        let http = sync.test.http.clone();
+        async move { http.receive_requests.recv().await }
+    });
+
+    // Should reconnect after the configured delay.
+    sync.test.advance_time(Duration::from_mins(30));
+    assert!(!task.is_finished());
+    sync.test.advance_time(Duration::from_mins(30));
+    assert!(task.is_finished());
+}

@@ -1,6 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
-use crate::sync::connector::BackendConnector;
+use futures_lite::future::yield_now;
+
+use crate::{env::PowerSyncEnvironment, sync::connector::BackendConnector};
 
 /// Options controlling how PowerSync connects to a sync service.
 #[derive(Clone)]
@@ -33,5 +35,21 @@ impl SyncOptions {
     /// Configures the delay after a failed sync iteration (the default is 5 seconds).
     pub fn with_retry_delay(&mut self, delay: Duration) {
         self.retry_delay = delay;
+    }
+
+    pub(crate) fn retry_delay(
+        &self,
+        env: &PowerSyncEnvironment,
+    ) -> impl Future<Output = ()> + 'static {
+        let delay = self.retry_delay;
+        let timer = env.timer.clone();
+
+        async move {
+            if delay > Duration::ZERO {
+                timer.delay_once(delay).await
+            } else {
+                yield_now().await
+            }
+        }
     }
 }

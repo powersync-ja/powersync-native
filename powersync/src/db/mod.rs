@@ -84,7 +84,7 @@ impl PowerSyncDatabase {
     /// Requests the download actor, started with [Self::download_actor], to start establishing a
     /// connection to the PowerSync service.
     pub async fn connect(&self, options: SyncOptions) {
-        self.sync.connect(options, &self.inner).await
+        self.sync.connect(options).await
     }
 
     /// If the sync client is currently connected, requests it to disconnect.

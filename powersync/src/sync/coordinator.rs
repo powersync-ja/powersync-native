@@ -5,7 +5,6 @@ use async_oneshot::oneshot;
 
 use crate::{
     SyncOptions,
-    db::internal::InnerPowerSyncState,
     sync::{
         download::DownloadActorCommand, streams::ChangedSyncSubscriptions,
         upload::UploadActorCommand,
@@ -42,16 +41,10 @@ pub struct SyncCoordinator {
 }
 
 impl SyncCoordinator {
-    pub async fn connect(&self, options: SyncOptions, db: &InnerPowerSyncState) {
-        {
-            let mut lock = db.retry_delay.lock().unwrap();
-            *lock = Some(options.retry_delay);
-        }
-
-        let connector = options.connector.clone();
-        self.download_actor_request(DownloadActorCommand::Connect(options))
+    pub async fn connect(&self, options: SyncOptions) {
+        self.download_actor_request(DownloadActorCommand::Connect(options.clone()))
             .await;
-        self.upload_actor_request(UploadActorCommand::Connect(connector))
+        self.upload_actor_request(UploadActorCommand::Connect(options))
             .await;
     }
 

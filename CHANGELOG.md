@@ -1,3 +1,10 @@
+## 0.0.8
+
+- __Breaking__: Timers on `PowerSyncEnvironment::custom` are now passed by value.
+- Don't mark sync status as connected when connection fails.
+- Fix sync client blocking writer for longer than necessary.
+- Set cache size and busy timeout on all connections instead of just the writer.
+
 ## 0.0.7
 
 - Update PowerSync core extension to version 0.5.2.

@@ -35,10 +35,15 @@ impl ConnectionPool {
             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
         )?);
 
+        fn configure_common(connection: &SqliteConnection) -> Result<(), PowerSyncError> {
+            connection.exec(c"PRAGMA busy_timeout = 30000")?;
+            connection.exec(c"PRAGMA cache_size = -51200")?; // -(50 * 1024)
+            Ok(())
+        }
+
         writer.exec(c"PRAGMA journal_mode = WAL")?;
         writer.exec(c"PRAGMA journal_size_limit = 6291456")?; // 6 * 1024 * 1024
-        writer.exec(c"PRAGMA busy_timeout = 30000")?;
-        writer.exec(c"PRAGMA cache_size = -51200")?; // -(50 * 1024)
+        configure_common(&writer)?;
 
         let mut readers = vec![];
         for _ in 0..5 {
@@ -46,7 +51,7 @@ impl ConnectionPool {
                 &path,
                 SQLITE_OPEN_READONLY,
             )?);
-            reader.exec(c"PRAGMA query_only = 1")?;
+            configure_common(&reader)?;
             readers.push(reader);
         }
 
