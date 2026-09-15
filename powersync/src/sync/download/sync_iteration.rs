@@ -183,7 +183,7 @@ impl<'a> DownloadClient<'a> {
         request: CheckpointRequestPayload,
     ) -> Result<(), PowerSyncError> {
         let credentials = connector.fetch_credentials().await?;
-        let response = checkpoint_request(&db, &request, credentials).await?;
+        let response = checkpoint_request(&db, connector.as_ref(), &request, credentials).await?;
         db.seed_checkpoint_request_id(response).await?;
 
         Ok(())
@@ -211,6 +211,7 @@ impl<'a> DownloadClient<'a> {
             future.await?;
         }
 
+        *future = None;
         // This doesn't generate events, we should just poll the future.
         future::pending().await
     }

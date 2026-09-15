@@ -53,6 +53,12 @@ impl From<reqwest::Error> for PowerSyncError {
     }
 }
 
+impl From<CheckpointError> for PowerSyncError {
+    fn from(value: CheckpointError) -> Self {
+        RawPowerSyncError::Checkpoint { error: value }.into()
+    }
+}
+
 impl From<RawPowerSyncError> for PowerSyncError {
     fn from(value: RawPowerSyncError) -> Self {
         PowerSyncError {

@@ -1,13 +1,16 @@
 use crate::sync_line::{Checkpoint, DataLine, OplogEntry, SyncLine};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_lite::{Stream, StreamExt, ready, stream};
+use futures_lite::future::Boxed;
+use futures_lite::{FutureExt, Stream, StreamExt, ready, stream};
 use pin_project_lite::pin_project;
 use powersync::http::{HttpClient, Request, Response, ResponseBody};
 use powersync::{BackendConnector, PowerSyncCredentials, StreamPriority, error::PowerSyncError};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use serde_with::{DisplayFromStr, serde_as};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::Context;
 use std::{
     sync::{Arc, Mutex},
@@ -18,6 +21,10 @@ pub struct MockSyncService {
     pub receive_requests: async_channel::Receiver<PendingSyncResponse>,
     send_requests: async_channel::Sender<PendingSyncResponse>,
     pub write_checkpoints: Mutex<Box<dyn Fn() -> WriteCheckpointResponse + Send>>,
+    pub before_checkpoint_response: Mutex<Box<dyn Fn() -> Boxed<()> + Send>>,
+    pub checkpoint_requests_supported: AtomicBool,
+    pub last_checkpoint_request: AtomicUsize,
+    pub amount_of_checkpoint_requests: AtomicUsize,
 }
 
 impl Default for MockSyncService {
@@ -30,6 +37,10 @@ impl Default for MockSyncService {
             write_checkpoints: Mutex::new(Box::new(|| {
                 WriteCheckpointResponse::new("10".to_string())
             })),
+            before_checkpoint_response: Mutex::new(Box::new(|| async {}.boxed())),
+            checkpoint_requests_supported: AtomicBool::new(true),
+            last_checkpoint_request: Default::default(),
+            amount_of_checkpoint_requests: Default::default(),
         }
     }
 }
@@ -53,13 +64,22 @@ impl MockSyncService {
         #[async_trait]
         impl HttpClient for MockClient {
             async fn send(&self, req: Request) -> Result<Response, PowerSyncError> {
-                match req.url.path() {
-                    "/sync/stream" => Ok(self.service.sync_stream(req).await),
-                    "/write-checkpoint2.json" => {
-                        Ok(self.service.generate_write_checkpoint_response())
+                Ok(match req.url.path() {
+                    "/sync/stream" => self.service.sync_stream(req).await,
+                    "/sync/checkpoint-request" => {
+                        if !self
+                            .service
+                            .checkpoint_requests_supported
+                            .load(Ordering::SeqCst)
+                        {
+                            return Ok(MockSyncService::generate_not_found());
+                        }
+
+                        self.service.generate_checkpoint_request_response(req)
                     }
-                    _ => Ok(MockSyncService::generate_bad_request()),
-                }
+                    "/write-checkpoint2.json" => self.service.generate_write_checkpoint_response(),
+                    _ => MockSyncService::generate_bad_request(),
+                })
             }
         }
 
@@ -105,9 +125,60 @@ impl MockSyncService {
         }
     }
 
+    fn generate_checkpoint_request_response(&self, req: Request) -> Response {
+        #[serde_as]
+        #[derive(Deserialize, Serialize)]
+        struct RequestData {
+            #[serde_as(as = "DisplayFromStr")]
+            checkpoint_request_id: usize,
+        }
+
+        #[derive(Serialize)]
+        struct ResponseBodyData {
+            data: RequestData,
+        }
+
+        let body: RequestData = serde_json::from_slice(&req.body.unwrap_or_default()).unwrap();
+        let before = self
+            .last_checkpoint_request
+            .fetch_max(body.checkpoint_request_id, Ordering::SeqCst);
+        let request_id = before.max(body.checkpoint_request_id);
+
+        self.amount_of_checkpoint_requests
+            .fetch_add(1, Ordering::SeqCst);
+
+        let data = Bytes::from(
+            serde_json::to_vec(&ResponseBodyData {
+                data: RequestData {
+                    checkpoint_request_id: request_id,
+                },
+            })
+            .unwrap(),
+        );
+        Response {
+            status: 200,
+            content_type: Some("application/json".to_string()),
+            body: ResponseBody {
+                length: Some(data.len() as u64),
+                reader: stream::once(Ok(data)).boxed(),
+            },
+        }
+    }
+
     fn generate_bad_request() -> Response {
         Response {
             status: 400,
+            content_type: None,
+            body: ResponseBody {
+                reader: stream::empty().boxed(),
+                length: Some(0),
+            },
+        }
+    }
+
+    fn generate_not_found() -> Response {
+        Response {
+            status: 404,
             content_type: None,
             body: ResponseBody {
                 reader: stream::empty().boxed(),
@@ -142,6 +213,13 @@ impl PendingSyncResponse {
         });
 
         self.channel.send(msg).await.unwrap()
+    }
+
+    pub async fn send_keepalive(&self, token_expires_in: u32) {
+        self.channel
+            .send(SyncLine::TokenExpiresIn(token_expires_in))
+            .await
+            .unwrap();
     }
 
     pub async fn bogus_data_line(&self, last_id: &mut i64, bucket: &'static str, amount: usize) {
@@ -212,7 +290,21 @@ pub struct WriteCheckpointResponseData {
     pub write_checkpoint: String,
 }
 
-pub struct TestConnector;
+pub struct TestConnector {
+    pub post_checkpoint_request: Box<
+        dyn Fn(i64) -> Option<Pin<Box<dyn Future<Output = Result<i64, PowerSyncError>> + Send>>>
+            + Send
+            + Sync,
+    >,
+}
+
+impl Default for TestConnector {
+    fn default() -> Self {
+        Self {
+            post_checkpoint_request: Box::new(|_| None),
+        }
+    }
+}
 
 #[async_trait]
 impl BackendConnector for TestConnector {
@@ -225,5 +317,13 @@ impl BackendConnector for TestConnector {
 
     async fn upload_data(&self) -> Result<(), PowerSyncError> {
         Ok(())
+    }
+
+    fn post_checkpoint_request<'a>(
+        &'a self,
+        _client_id: &'a str,
+        request_id: i64,
+    ) -> Option<Pin<Box<dyn Future<Output = Result<i64, PowerSyncError>> + Send + 'a>>> {
+        (self.post_checkpoint_request)(request_id)
     }
 }

@@ -159,6 +159,7 @@ impl<'a> CrudUpload<'a> {
                 let checkpoint_request_id = self.db.next_checkpoint_request_id().await?;
                 checkpoint_request(
                     &self.db,
+                    self.options.connector.as_ref(),
                     &CheckpointRequestPayload {
                         client_id,
                         checkpoint_request_id,
