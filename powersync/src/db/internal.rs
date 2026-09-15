@@ -236,7 +236,6 @@ impl InnerPowerSyncState {
 pub enum CheckpointCounter {
     Target,
     Seed,
-    Current,
     Next,
 }
 
@@ -245,7 +244,6 @@ impl CheckpointCounter {
         match self {
             CheckpointCounter::Target => "target_checkpoint_request_id",
             CheckpointCounter::Seed => "seed_checkpoint_request_id",
-            CheckpointCounter::Current => "current_checkpoint_request_id",
             CheckpointCounter::Next => "next_checkpoint_request_id",
         }
     }

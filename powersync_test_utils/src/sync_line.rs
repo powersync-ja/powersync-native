@@ -4,6 +4,7 @@ use serde_with::{DisplayFromStr, serde_as};
 
 pub enum SyncLine<'a> {
     Checkpoint(Checkpoint<'a>),
+    TokenExpiresIn(u32),
     Data(DataLine<'a>),
     Custom(serde_json::Value),
 }
@@ -17,6 +18,11 @@ impl<'a> Serialize for SyncLine<'a> {
             SyncLine::Checkpoint(cp) => {
                 let mut map = serializer.serialize_map(Some(1))?;
                 map.serialize_entry("checkpoint", cp)?;
+                map.end()
+            }
+            SyncLine::TokenExpiresIn(remaining) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("token_expires_in", remaining)?;
                 map.end()
             }
             SyncLine::Data(data) => {

@@ -60,6 +60,11 @@ impl SyncOptions {
             }
         }
     }
+
+    /// Configures the [CheckpointMode] used to request checkpoints after completed uploads.
+    pub fn with_checkpoint_mode(&mut self, mode: CheckpointMode) {
+        self.checkpoints = mode;
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

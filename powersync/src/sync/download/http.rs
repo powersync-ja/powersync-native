@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use crate::BackendConnector;
 use crate::http::{Request, Response};
 use crate::sync::instruction::CheckpointRequestPayload;
 use crate::util::LineSplitter;
@@ -102,9 +103,16 @@ pub async fn write_checkpoint(
 /// Posts a checkpoint request to the PowerSync sync service.
 pub async fn checkpoint_request(
     db: &InnerPowerSyncState,
+    connector: &dyn BackendConnector,
     body: &CheckpointRequestPayload,
     auth: PowerSyncCredentials,
 ) -> Result<i64, PowerSyncError> {
+    if let Some(future) =
+        connector.post_checkpoint_request(&body.client_id, body.checkpoint_request_id)
+    {
+        return future.await;
+    }
+
     let url = auth.parsed_endpoint("sync/checkpoint-request")?;
 
     let body = serde_json::to_vec(body)?;
