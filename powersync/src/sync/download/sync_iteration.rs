@@ -51,9 +51,12 @@ impl DownloadClient {
             }?;
 
             trace!("Handling event {event:?}");
-            let mut conn = self.db.writer().await?;
+            let instructions = {
+                let mut conn = self.db.writer().await?;
+                event.invoke_control(conn.sqlite_connection_mut())?
+            };
 
-            for instr in event.invoke_control(conn.sqlite_connection_mut())? {
+            for instr in instructions {
                 trace!("Handling instruction {instr:?}");
 
                 match instr {

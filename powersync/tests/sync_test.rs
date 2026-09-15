@@ -426,6 +426,49 @@ fn upload_retry() {
 }
 
 #[test]
+fn fetching_credentials_does_not_hold_the_download_writer_lease() {
+    struct WriterUsingConnector {
+        entered: async_channel::Sender<()>,
+        release: async_channel::Receiver<()>,
+    }
+
+    #[async_trait]
+    impl BackendConnector for WriterUsingConnector {
+        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
+            self.entered.send(()).await.unwrap();
+            self.release.recv().await.unwrap();
+            Ok(PowerSyncCredentials {
+                endpoint: "https://rust.unit.test.powersync.com/".to_string(),
+                token: "token".to_string(),
+            })
+        }
+
+        async fn upload_data(&self) -> Result<(), PowerSyncError> {
+            Ok(())
+        }
+    }
+
+    let sync = SyncStreamTest::new();
+    let (entered_tx, entered_rx) = async_channel::bounded(1);
+    let (release_tx, release_rx) = async_channel::bounded(1);
+    sync.run(sync.db.connect(SyncOptions::new(WriterUsingConnector {
+        entered: entered_tx,
+        release: release_rx,
+    })));
+
+    sync.run(async {
+        entered_rx.recv().await.unwrap();
+        let writer = future::poll_once(sync.db.writer()).await;
+        assert!(
+            writer.is_some(),
+            "download retained the writer while awaiting credentials"
+        );
+        drop(writer);
+        release_tx.send(()).await.unwrap();
+    });
+}
+
+#[test]
 fn reports_correct_times() {
     let sync = SyncStreamTest::new();
     sync.connect();
