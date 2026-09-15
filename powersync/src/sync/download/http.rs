@@ -49,7 +49,7 @@ pub fn sync_stream(
     StreamExt::flat_map(stream, |response| match response {
         Err(error) => stream::once(Err(error)).boxed(),
         Ok(response) => stream::once(Ok(DownloadEvent::ConnectionEstablished))
-            .chain(response_to_lines(Ok(response)))
+            .chain(response_to_lines(response))
             .boxed(),
     })
 }
@@ -111,13 +111,8 @@ fn check_ok(code: u16) -> Result<(), PowerSyncError> {
 /// For JSON responses, this splits at newline chars. For BSON responses, this tracks the length
 /// prefix to split at objects.
 fn response_to_lines(
-    response: Result<Response, PowerSyncError>,
+    response: Response,
 ) -> impl Stream<Item = Result<DownloadEvent, PowerSyncError>> {
-    let response = match response {
-        Ok(res) => res,
-        Err(e) => return stream::once(Err::<DownloadEvent, PowerSyncError>(e)).boxed(),
-    };
-
     let is_bson = match &response.content_type {
         None => false,
         Some(value) => value.contains("vnd.powersync.bson-stream"),
