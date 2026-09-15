@@ -46,10 +46,11 @@ pub fn sync_stream(
 
     let stream = stream::once_future(response);
 
-    StreamExt::flat_map(stream, |response| {
-        let items = response_to_lines(response);
-
-        stream::once(Ok(DownloadEvent::ConnectionEstablished)).chain(items)
+    StreamExt::flat_map(stream, |response| match response {
+        Err(error) => stream::once(Err(error)).boxed(),
+        Ok(response) => stream::once(Ok(DownloadEvent::ConnectionEstablished))
+            .chain(response_to_lines(Ok(response)))
+            .boxed(),
     })
 }
 
@@ -136,5 +137,94 @@ fn response_to_lines(
                 Err(e) => Err(e),
             })
             .boxed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{pin::Pin, sync::Arc, time::Duration};
+
+    use async_trait::async_trait;
+    use futures_lite::{StreamExt, future};
+    use rusqlite::Connection;
+
+    use super::*;
+    use crate::{
+        db::{internal::InnerPowerSyncState, pool::ConnectionPool},
+        env::{PowerSyncEnvironment, Timer},
+        http::{HttpClient, Request, ResponseBody},
+        schema::Schema,
+        sync::coordinator::SyncCoordinator,
+    };
+
+    struct FailingClient;
+
+    #[async_trait]
+    impl HttpClient for FailingClient {
+        async fn send(&self, _request: Request) -> Result<Response, PowerSyncError> {
+            Err(PowerSyncError::argument_error("offline"))
+        }
+    }
+
+    struct StatusClient(u16);
+
+    #[async_trait]
+    impl HttpClient for StatusClient {
+        async fn send(&self, _request: Request) -> Result<Response, PowerSyncError> {
+            Ok(Response {
+                status: self.0,
+                content_type: Some("application/x-ndjson".to_string()),
+                body: ResponseBody {
+                    reader: stream::empty().boxed(),
+                    length: Some(0),
+                },
+            })
+        }
+    }
+
+    struct UnusedTimer;
+
+    impl Timer for UnusedTimer {
+        fn delay_once(&self, _duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            Box::pin(future::pending())
+        }
+    }
+
+    fn first_event(client: impl HttpClient) -> Result<Option<DownloadEvent>, PowerSyncError> {
+        PowerSyncEnvironment::powersync_auto_extension().unwrap();
+        let pool = ConnectionPool::single_connection(Connection::open_in_memory().unwrap());
+        let environment = PowerSyncEnvironment::custom(client, pool, &UnusedTimer);
+        let coordinator = Arc::new(SyncCoordinator::default());
+        let db = Arc::new(InnerPowerSyncState::new(
+            environment,
+            Schema::default().into(),
+            &coordinator,
+        ));
+        let credentials = PowerSyncCredentials {
+            endpoint: "https://rust.unit.test.powersync.com/".to_string(),
+            token: "token".to_string(),
+        };
+        let mut events = Box::pin(sync_stream(db, credentials, "{}".to_string()));
+
+        future::block_on(events.as_mut().try_next())
+    }
+
+    #[test]
+    fn transport_error_does_not_report_connection_established() {
+        assert!(first_event(FailingClient).is_err());
+    }
+
+    #[test]
+    fn unsuccessful_status_does_not_report_connection_established() {
+        assert!(first_event(StatusClient(401)).is_err());
+        assert!(first_event(StatusClient(500)).is_err());
+    }
+
+    #[test]
+    fn successful_response_reports_connection_before_stream_events() {
+        assert!(matches!(
+            first_event(StatusClient(200)),
+            Ok(Some(DownloadEvent::ConnectionEstablished))
+        ));
     }
 }
