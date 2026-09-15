@@ -79,10 +79,10 @@ impl UploadActor {
                     // Already in progress, don't start another.
                     None
                 }
-                UploadActorCommand::Connect(connector) => {
-                    // TODO: Only abort if the connector has changed?
+                UploadActorCommand::Connect(options) => {
+                    // TODO: Only abort if options have changed?
                     Some(UploadActorState::Connected(Self::connected_state(
-                        db, connector,
+                        db, options,
                     )))
                 }
                 UploadActorCommand::Disconnect => Some(UploadActorState::Idle),
@@ -106,12 +106,12 @@ impl UploadActor {
                 };
 
                 match command.command {
-                    UploadActorCommand::Connect(connector) => {
+                    UploadActorCommand::Connect(options) => {
                         let _ = command.response.send(());
-                        UploadActorState::Connected(Self::connected_state(&self.db, connector))
+                        UploadActorState::Connected(Self::connected_state(&self.db, options))
                     }
                     UploadActorCommand::TriggerCrudUpload => {
-                        // We can't upload because we're not connector
+                        // We can't upload because we're not connected
                         old_state
                     }
                     UploadActorCommand::Disconnect => {
@@ -140,8 +140,8 @@ impl UploadActor {
                     let _ = command.response.send(());
 
                     match command.command {
-                        UploadActorCommand::Connect(connector) => Transition::Abort(
-                            UploadActorState::Connected(Self::connected_state(&self.db, connector)),
+                        UploadActorCommand::Connect(options) => Transition::Abort(
+                            UploadActorState::Connected(Self::connected_state(&self.db, options)),
                         ),
                         UploadActorCommand::TriggerCrudUpload => Transition::StartUpload,
                         UploadActorCommand::Disconnect => Transition::Abort(UploadActorState::Idle),

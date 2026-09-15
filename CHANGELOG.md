@@ -1,4 +1,4 @@
-## 0.0.8
+## 0.0.8 (unreleased)
 
 - __Breaking__: Timers on `PowerSyncEnvironment::custom` are now passed by value.
 - Don't mark sync status as connected when connection fails.

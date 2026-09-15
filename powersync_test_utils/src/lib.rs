@@ -104,6 +104,7 @@ impl DatabaseTest {
         struct TestDelay {
             state: Arc<Mutex<MockTimer>>,
             end_timestamp: Duration,
+            did_register: bool,
         }
 
         impl Timer for TestTimer {
@@ -117,6 +118,7 @@ impl DatabaseTest {
                 TestDelay {
                     state: self.state.clone(),
                     end_timestamp,
+                    did_register: false,
                 }
                 .boxed()
             }
@@ -125,24 +127,29 @@ impl DatabaseTest {
         impl Future for TestDelay {
             type Output = ();
 
-            fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-                let mut state = self.state.lock().unwrap();
+            fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                let state = self.state.clone();
+                let mut state = state.lock().unwrap();
                 if state.time_passed >= self.end_timestamp {
                     return Poll::Ready(());
                 }
 
-                let search = state
-                    .scheduled
-                    .binary_search_by_key(&self.end_timestamp, |&(ts, _)| ts);
+                if !self.did_register {
+                    self.did_register = true;
 
-                let schedule = (self.end_timestamp, cx.waker().clone());
-                state.scheduled.insert(
-                    match search {
-                        Ok(existing) => existing + 1,
-                        Err(expected_index) => expected_index,
-                    },
-                    schedule,
-                );
+                    let search = state
+                        .scheduled
+                        .binary_search_by_key(&self.end_timestamp, |&(ts, _)| ts);
+
+                    let schedule = (self.end_timestamp, cx.waker().clone());
+                    state.scheduled.insert(
+                        match search {
+                            Ok(existing) => existing + 1,
+                            Err(expected_index) => expected_index,
+                        },
+                        schedule,
+                    );
+                }
 
                 Poll::Pending
             }
