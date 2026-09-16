@@ -223,6 +223,36 @@ fn insert() {
 }
 
 #[test]
+fn applies_checkpoint_after_draining_crud_queue() {
+    future::block_on(async move {
+        let test = DatabaseTest::new();
+        let db = test.in_memory_database();
+
+        execute(
+            &db,
+            "INSERT INTO users (id, name) VALUES (?, ?)",
+            params!["test", "name"],
+        )
+        .await;
+
+        let transaction = db.next_crud_transaction().await.unwrap().unwrap();
+        transaction.complete_with_checkpoint(42).await.unwrap();
+
+        let mut reader = db.reader().await.unwrap();
+        let reader = reader.transaction().unwrap();
+        let checkpoint: i64 = reader
+            .query_one(
+                "SELECT powersync_control('target_checkpoint_request_id', NULL)",
+                params![],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(checkpoint, 42);
+    });
+}
+
+#[test]
 fn crud_transactions() {
     async fn create_transaction(db: &PowerSyncDatabase, amount: usize) {
         let mut writer = db.writer().await.unwrap();

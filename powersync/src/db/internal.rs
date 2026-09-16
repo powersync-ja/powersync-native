@@ -112,7 +112,7 @@ impl InnerPowerSyncState {
         if let Some(write_checkpoint) = write_checkpoint {
             // If there are no remaining crud items we can set the target op to the checkpoint.
             let stmt = writer.inner.prepare("SELECT 1 FROM ps_crud LIMIT 1")?;
-            if let ResultCode::OK = stmt.step()? {
+            if let ResultCode::DONE = stmt.step()? {
                 target_op = write_checkpoint;
             }
         }
