@@ -189,25 +189,20 @@ impl DownloadEvent {
         let tx = TransactionGuard::new(conn)?;
 
         let instructions = {
-            let stmt = tx.inner.prepare("SELECT powersync_control(?, ?)")?;
             let (op, arg) = self.into_powersync_control_argument();
+            let stmt = tx.inner.prepare("SELECT powersync_control(?, ?)")?;
 
             stmt.bind_text(1, op, Destructor::STATIC)?;
-            // SAFETY: `arg` remains alive until after `stmt` is explicitly dropped below.
+            // SAFETY: `arg` was declared before `stmt`, so it outlives `stmt` on every exit.
             unsafe { arg.bind_to(&stmt, 2)? };
 
-            let instructions = if let ResultCode::ROW = stmt.step()? {
-                let instructions = stmt.column_text(0).map_err(|_| {
+            if let ResultCode::ROW = stmt.step()? {
+                serde_json::from_str(stmt.column_text(0).map_err(|_| {
                     PowerSyncError::argument_error("Could not read powersync_control instructions")
-                })?;
-
-                serde_json::from_str(instructions)?
+                })?)?
             } else {
                 panic!("Expected a row") // Can't happen, scalar select
-            };
-
-            drop(stmt);
-            instructions
+            }
         };
 
         tx.commit()?;
