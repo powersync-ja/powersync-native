@@ -52,8 +52,6 @@ pub async fn crud_upload_loop(
             channels: &channels,
         };
         upload.run().await;
-
-        db.status.update(|s| s.set_upload_state(UploadStatus::Idle));
         next_trigger.await;
     }
 }
@@ -67,6 +65,9 @@ struct CrudUpload<'a> {
 impl<'a> CrudUpload<'a> {
     pub async fn run(&mut self) {
         let mut last_item_id = None::<i64>;
+        scopeguard::defer! {
+            self.db.status.update(|s| s.set_upload_state(UploadStatus::Idle));
+        }
 
         // Invoke upload method on connector until there are no remaining CRUD items to upload.
         loop {
@@ -87,7 +88,7 @@ impl<'a> CrudUpload<'a> {
     }
 
     async fn upload_step(
-        &mut self,
+        &self,
         last_item_id: &mut Option<i64>,
     ) -> Result<ControlFlow<()>, PowerSyncError> {
         let Some(item) = self.oldest_crud_item_id().await? else {
