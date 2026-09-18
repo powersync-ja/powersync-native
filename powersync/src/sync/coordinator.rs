@@ -1,5 +1,5 @@
 use async_lock::Mutex as AsyncMutex;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_channel::{Receiver, Sender};
 
@@ -21,7 +21,6 @@ use crate::{
 #[derive(Default)]
 pub struct SyncCoordinator {
     task: AsyncMutex<Option<SyncTasks>>,
-    channels: Mutex<Option<SyncChannels>>,
 }
 
 impl SyncCoordinator {
@@ -31,10 +30,6 @@ impl SyncCoordinator {
         let mut guard = self.task.lock().await;
 
         let (channels, download_receive, uploads_receive) = SyncChannels::create();
-        {
-            let mut guard = self.channels.lock().unwrap();
-            *guard = Some(channels.clone());
-        }
 
         let downloads = db.env.spawn(download_loop(
             db.clone(),
@@ -50,7 +45,7 @@ impl SyncCoordinator {
         ));
 
         *guard = Some(SyncTasks {
-            signals: self.clone(),
+            channels,
             uploads: Some(uploads),
             downloads: Some(downloads),
         });
@@ -92,25 +87,26 @@ impl SyncCoordinator {
     ///
     /// This is a no-op if not connected.
     pub async fn handle_subscriptions_changed(&self, update: ChangedSyncSubscriptions) {
-        let channel = {
-            let guard = self.channels.lock().unwrap();
+        let Some(channel) = ({
+            let guard = self.task.lock().await;
+
             guard
                 .as_ref()
-                .map(|channels| channels.local_download_events.clone())
+                .map(|tasks| tasks.channels.local_download_events.clone())
+        }) else {
+            return;
         };
 
-        if let Some(channel) = channel {
-            let _ = channel
-                .send(DownloadEvent::UpdateSubscriptions { keys: update.0 })
-                .await;
-        }
+        let _ = channel
+            .send(DownloadEvent::UpdateSubscriptions { keys: update.0 })
+            .await;
     }
 }
 
 struct SyncTasks {
+    channels: SyncChannels,
     downloads: Option<PowerSyncTask>,
     uploads: Option<PowerSyncTask>,
-    signals: Arc<SyncCoordinator>,
 }
 
 impl SyncTasks {
@@ -132,9 +128,6 @@ impl Drop for SyncTasks {
         if let Some(task) = self.uploads.take() {
             task.cancel();
         }
-
-        let mut guard = self.signals.channels.lock().unwrap();
-        *guard = None;
     }
 }
 

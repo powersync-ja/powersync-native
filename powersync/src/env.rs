@@ -1,6 +1,8 @@
 use super::db::pool::ConnectionPool;
 use crate::error::{PowerSyncError, RawPowerSyncError};
 use crate::http::HttpClient;
+#[cfg(feature = "smol")]
+use async_executor::Executor;
 use async_task::Task;
 use futures_lite::FutureExt;
 use futures_lite::future::Boxed;
@@ -59,11 +61,14 @@ impl PowerSyncEnvironment {
 
     /// An [AsyncRuntime] implementation based on `async_task` and [async_io::Timer].
     #[cfg(feature = "smol")]
-    pub fn async_io() -> impl Timer {
+    pub fn async_io(executor: Arc<Executor<'static>>) -> impl AsyncRuntime {
         use async_io::Timer as PlatformTimer;
 
-        struct AsyncIoRuntime;
-        impl AsyncIoRuntime for AsyncIoTimer {
+        struct AsyncIoRuntime {
+            executor: Arc<Executor<'static>>,
+        }
+
+        impl AsyncRuntime for AsyncIoRuntime {
             fn delay_once(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> {
                 use futures_lite::FutureExt;
 
@@ -74,10 +79,10 @@ impl PowerSyncEnvironment {
             }
 
             fn spawn(&self, task: Boxed<()>) -> PowerSyncTask<()> {
-                tokio::spawn(task).into()
+                self.executor.spawn(task).into()
             }
         }
-        AsyncIoRuntime
+        AsyncIoRuntime { executor }
     }
 
     /// An [AsyncRuntime] implementation based on tokio.

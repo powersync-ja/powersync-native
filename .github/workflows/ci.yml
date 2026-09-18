@@ -38,6 +38,9 @@ jobs:
       - name: Build without rusqlite
         run: cargo build --no-default-features
 
+      - name: Build with smol runtime (tokio disabled)
+        run: cargo build -p powersync --no-default-features --features smol,rusqlite --verbose
+
   windows:
     name: Check Windows build
     runs-on: windows-latest
