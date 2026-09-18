@@ -2,6 +2,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::value::RawValue;
+use serde_with::{DisplayFromStr, serde_as};
 
 use crate::{sync::progress::ProgressCounters, util::SerializedJsonObject};
 
@@ -20,6 +21,7 @@ pub enum Instruction {
     /// and then forward received lines via [SyncEvent::TextLine] and [SyncEvent::BinaryLine].
     EstablishSyncStream {
         request: Box<RawValue>,
+        checkpoint_request: Option<CheckpointRequestPayload>,
     },
     FetchCredentials {
         /// Whether the credentials currently used have expired.
@@ -56,6 +58,7 @@ pub enum LogSeverity {
 }
 
 /// Information about a progressing download.
+#[serde_as]
 #[derive(Deserialize, Default, Debug)]
 pub struct DownloadSyncStatus {
     /// Whether the socket to the sync service is currently open and connected.
@@ -68,6 +71,10 @@ pub struct DownloadSyncStatus {
     pub connecting: bool,
     pub streams: Vec<ActiveStreamSubscription>,
     pub downloading: Option<IgnoredAny>,
+
+    #[serde(rename = "internal_last_applied_checkpoint_request_id")]
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub last_applied_checkpoint_request: Option<i64>,
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -92,4 +99,12 @@ impl From<Timestamp> for SystemTime {
         let since_epoch = Duration::from_micros(val.0 as u64);
         SystemTime::UNIX_EPOCH + since_epoch
     }
+}
+
+#[serde_as]
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CheckpointRequestPayload {
+    pub client_id: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub checkpoint_request_id: i64,
 }

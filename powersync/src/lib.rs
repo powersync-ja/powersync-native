@@ -12,7 +12,7 @@ pub use db::streams::StreamSubscription;
 pub use db::streams::StreamSubscriptionOptions;
 pub use db::streams::SyncStream;
 pub use sync::connector::{BackendConnector, PowerSyncCredentials};
-pub use sync::options::SyncOptions;
+pub use sync::options::{CheckpointMode, RequestsCheckpointMode, SyncOptions};
 pub use sync::status::SyncStatusData;
 pub use sync::stream_priority::StreamPriority;
 pub mod error;

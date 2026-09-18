@@ -111,12 +111,53 @@ impl InnerPowerSyncState {
         writer.commit()
     }
 
+    pub async fn seed_checkpoint_request_id(&self, id: i64) -> Result<(), PowerSyncError> {
+        let mut writer = self.writer().await?;
+        let writer = TransactionGuard::new(writer.sqlite_connection_mut())?;
+
+        Self::checkpoint_request_control(&writer, CheckpointCounter::Seed, Some(id))?;
+        writer.commit()
+    }
+
+    pub async fn next_checkpoint_request_id(&self) -> Result<i64, PowerSyncError> {
+        let id = self
+            .read_checkpoint_request_id(CheckpointCounter::Next)
+            .await?;
+        Ok(id.expect("Core extension should return next checkpoint request id"))
+    }
+
+    pub async fn current_checkpoint_request_id(&self) -> Result<Option<i64>, PowerSyncError> {
+        self.read_checkpoint_request_id(CheckpointCounter::Current)
+            .await
+    }
+
     pub fn target_checkpoint_request_id(
         writer: &TransactionGuard,
         update: Option<i64>,
     ) -> Result<Option<i64>, PowerSyncError> {
+        Self::checkpoint_request_control(writer, CheckpointCounter::Target, update)
+    }
+
+    async fn read_checkpoint_request_id(
+        &self,
+        counter: CheckpointCounter,
+    ) -> Result<Option<i64>, PowerSyncError> {
+        let mut writer = self.writer().await?;
+        let writer = TransactionGuard::new(writer.sqlite_connection_mut())?;
+
+        let id = Self::checkpoint_request_control(&writer, counter, None)?;
+        writer.commit()?;
+        Ok(id)
+    }
+
+    fn checkpoint_request_control(
+        writer: &TransactionGuard,
+        counter: CheckpointCounter,
+        update: Option<i64>,
+    ) -> Result<Option<i64>, PowerSyncError> {
         let stmt = writer.inner.prepare("SELECT powersync_control(?, ?);")?;
-        stmt.bind_text(1, "target_checkpoint_request_id", Destructor::STATIC)?;
+
+        stmt.bind_text(1, counter.control_op(), Destructor::STATIC)?;
         if let Some(update) = update {
             stmt.bind_int64(2, update)?;
         } else {
@@ -202,6 +243,25 @@ impl InnerPowerSyncState {
             if predicate(&status) {
                 return;
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum CheckpointCounter {
+    Target,
+    Seed,
+    Current,
+    Next,
+}
+
+impl CheckpointCounter {
+    fn control_op(&self) -> &'static str {
+        match self {
+            CheckpointCounter::Target => "target_checkpoint_request_id",
+            CheckpointCounter::Seed => "seed_checkpoint_request_id",
+            CheckpointCounter::Current => "current_checkpoint_request_id",
+            CheckpointCounter::Next => "next_checkpoint_request_id",
         }
     }
 }

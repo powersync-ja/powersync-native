@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use futures_lite::future::yield_now;
 
-use crate::{env::PowerSyncEnvironment, sync::connector::BackendConnector};
+use crate::{env::PowerSyncEnvironment, error::PowerSyncError, sync::connector::BackendConnector};
 
 /// Options controlling how PowerSync connects to a sync service.
 #[derive(Clone)]
@@ -13,6 +13,9 @@ pub struct SyncOptions {
     pub(crate) include_default_streams: bool,
     /// The retry delay between sync iterations on errors.
     pub(crate) retry_delay: Duration,
+
+    /// How to request checkpoints after completing uploads.
+    pub(crate) checkpoints: CheckpointMode,
 }
 
 impl SyncOptions {
@@ -22,6 +25,7 @@ impl SyncOptions {
             connector: Arc::new(connector),
             include_default_streams: true,
             retry_delay: Duration::from_secs(5),
+            checkpoints: CheckpointMode::default(),
         }
     }
 
@@ -55,5 +59,49 @@ impl SyncOptions {
                 yield_now().await
             }
         }
+    }
+
+    /// Configures the [CheckpointMode] used to request checkpoints after completed uploads.
+    pub fn with_checkpoint_mode(&mut self, mode: CheckpointMode) {
+        self.checkpoints = mode;
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CheckpointMode {
+    #[default]
+    Legacy,
+    Requests(RequestsCheckpointMode),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestsCheckpointMode {
+    pub(crate) retry_delay: Duration,
+}
+
+impl RequestsCheckpointMode {
+    const DEFAULT_RETRY: Duration = Duration::from_secs(10);
+    const MIN_RETRY: Duration = Self::DEFAULT_RETRY;
+}
+
+impl Default for RequestsCheckpointMode {
+    fn default() -> Self {
+        Self {
+            retry_delay: Self::DEFAULT_RETRY,
+        }
+    }
+}
+
+impl TryFrom<Duration> for RequestsCheckpointMode {
+    type Error = PowerSyncError;
+
+    fn try_from(value: Duration) -> Result<Self, Self::Error> {
+        if value < Self::MIN_RETRY {
+            return Err(PowerSyncError::argument_error(format!(
+                "Minimum retry delay is 10s, got {value:?}"
+            )));
+        }
+
+        Ok(Self { retry_delay: value })
     }
 }

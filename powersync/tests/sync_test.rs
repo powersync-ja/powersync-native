@@ -8,10 +8,14 @@ use std::{
 
 use async_trait::async_trait;
 use event_listener::Event;
-use futures_lite::{StreamExt, future};
+use futures_lite::{
+    FutureExt, StreamExt,
+    future::{self, yield_now},
+};
 use powersync::{
-    BackendConnector, PowerSyncCredentials, PowerSyncDatabase, StreamPriority, StreamSubscription,
-    StreamSubscriptionOptions, SyncOptions, SyncStatusData, error::PowerSyncError,
+    BackendConnector, CheckpointMode, PowerSyncCredentials, PowerSyncDatabase,
+    RequestsCheckpointMode, StreamPriority, StreamSubscription, StreamSubscriptionOptions,
+    SyncOptions, SyncStatusData, error::PowerSyncError,
 };
 use powersync_test_utils::{
     DatabaseTest,
@@ -39,8 +43,15 @@ impl SyncStreamTest {
         self.connect_options(|_| {});
     }
 
+    fn connect_with_checkpoints(&self) {
+        self.connect_options(|options| {
+            options
+                .with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
+        });
+    }
+
     fn connect_options(&self, configure: impl FnOnce(&mut SyncOptions)) {
-        let mut options = SyncOptions::new(TestConnector);
+        let mut options = SyncOptions::new(TestConnector::default());
         configure(&mut options);
 
         self.run(self.db.connect(options))
@@ -513,4 +524,291 @@ fn reconnects_on_failure() {
     assert!(!task.is_finished());
     sync.test.advance_time(Duration::from_mins(30));
     assert!(task.is_finished());
+}
+
+#[test]
+fn requests_checkpoints_for_updates() {
+    struct TestConnector {
+        db: PowerSyncDatabase,
+    }
+
+    #[async_trait]
+    impl BackendConnector for TestConnector {
+        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
+            Ok(PowerSyncCredentials {
+                endpoint: "https://rust.unit.test.powersync.com/".to_string(),
+                token: "token".to_string(),
+            })
+        }
+
+        async fn upload_data(&self) -> Result<(), PowerSyncError> {
+            let Some(tx) = self.db.next_crud_transaction().await? else {
+                return Ok(());
+            };
+
+            tx.complete().await?;
+            Ok(())
+        }
+    }
+
+    let sync = SyncStreamTest::new();
+    let mut options = SyncOptions::new(TestConnector {
+        db: sync.db.clone(),
+    });
+    options.with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
+    options.with_retry_delay(Duration::ZERO);
+    sync.run(sync.db.connect(options));
+
+    {
+        let writer = sync.run(sync.db.writer()).unwrap();
+        writer
+            .execute(
+                "INSERT INTO users (id, name) VALUES (uuid(), ?)",
+                params!["local user"],
+            )
+            .unwrap();
+    }
+
+    // The local write should eventually be uploaded.
+    sync.run(async {
+        while sync
+            .test
+            .http
+            .last_checkpoint_request
+            .load(Ordering::SeqCst)
+            < 2
+        {
+            yield_now().await;
+        }
+    });
+}
+
+#[test]
+fn reports_download_error_when_seeding_checkpoint_fails() {
+    let sync = SyncStreamTest::new();
+    sync.test
+        .http
+        .checkpoint_requests_supported
+        .store(false, Ordering::SeqCst);
+
+    sync.connect_options(|options| {
+        options.with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
+        options.with_retry_delay(Duration::ZERO);
+    });
+    sync.run(sync.wait_for_status(|s| s.download_error().is_some()));
+}
+
+#[test]
+fn reposts_current_checkpoint_until_applied() {
+    let sync = SyncStreamTest::new();
+
+    sync.connect_options(|options| {
+        options.with_checkpoint_mode(CheckpointMode::Requests(
+            Duration::from_hours(1).try_into().unwrap(),
+        ));
+    });
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+
+        // Because we didn't include the checkpoint in a sync response, it should keep getting
+        // requested.
+        for i in 2..=10 {
+            sync.test.advance_time(Duration::from_hours(1));
+            assert_eq!(
+                sync.test
+                    .http
+                    .amount_of_checkpoint_requests
+                    .load(Ordering::SeqCst),
+                i
+            );
+        }
+
+        // Finally, include the checkpoint
+        request
+            .send_checkpoint(Checkpoint {
+                last_op_id: 0,
+                write_checkpoint: Some(1),
+                buckets: vec![],
+                streams: vec![],
+            })
+            .await;
+        request.send_checkpoint_complete(0, None).await;
+        sync.wait_for_status(|s| !s.is_downloading()).await;
+
+        // After which no further checkpoints should be requested
+        sync.test.advance_time(Duration::from_hours(10));
+        assert_eq!(
+            sync.test
+                .http
+                .amount_of_checkpoint_requests
+                .load(Ordering::SeqCst),
+            10
+        );
+    });
+}
+
+#[test]
+fn download_is_retried_on_checkpoint_request() {
+    struct Connector {
+        db: PowerSyncDatabase,
+    }
+
+    #[async_trait]
+    impl BackendConnector for Connector {
+        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
+            Ok(PowerSyncCredentials {
+                endpoint: "https://rust.unit.test.powersync.com/".to_string(),
+                token: "token".to_string(),
+            })
+        }
+
+        async fn upload_data(&self) -> Result<(), PowerSyncError> {
+            let tx = self.db.next_crud_transaction().await?;
+            if let Some(tx) = tx {
+                tx.complete().await?;
+            }
+
+            Ok(())
+        }
+    }
+
+    let sync = SyncStreamTest::new();
+    let mut options = SyncOptions::new(Connector {
+        db: sync.db.clone(),
+    });
+    options.with_retry_delay(Duration::from_hours(1));
+    options.with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
+
+    // Destroy the initial connection by sending a bogus line.
+    sync.run(async {
+        sync.db.connect(options).await;
+
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        request
+            .channel
+            .send(SyncLine::Custom(json!("invalid sync line")))
+            .await
+            .unwrap();
+
+        sync.wait_for_status(|s| s.download_error().is_some()).await;
+
+        // Trigger an upload here. Because the upload needs a seeded sync iteration, we should
+        // reconnect immediately instead of after the configured delay.
+        {
+            let writer = sync.db.writer().await.unwrap();
+            writer
+                .execute(
+                    "INSERT INTO users (id, name) VALUES (uuid(), 'local user')",
+                    params![],
+                )
+                .unwrap();
+        }
+
+        sync.test.http.receive_requests.recv().await.unwrap();
+    });
+}
+
+#[test]
+fn can_use_checkpoint_method_from_connector() {
+    let sync = SyncStreamTest::new();
+    let did_request_checkpoint = Event::new();
+    let listener = did_request_checkpoint.listen();
+
+    let mut options = SyncOptions::new(TestConnector {
+        post_checkpoint_request: Box::new(move |request_id| {
+            assert_eq!(request_id, 1);
+
+            did_request_checkpoint.notify(1);
+            return Some(async move { Ok(request_id) }.boxed());
+        }),
+    });
+    options.with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
+    options.with_retry_delay(Duration::ZERO);
+    sync.run(sync.db.connect(options));
+
+    sync.run(listener);
+}
+
+#[test]
+fn reconciles_checkpoint_state_on_token_expiry() {
+    let sync = SyncStreamTest::new();
+    sync.test
+        .http
+        .last_checkpoint_request
+        .store(100, Ordering::SeqCst);
+
+    sync.connect_options(|options| {
+        options.with_retry_delay(Duration::ZERO);
+        options.with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
+    });
+    sync.run(async {
+        while sync
+            .test
+            .http
+            .last_checkpoint_request
+            .load(Ordering::SeqCst)
+            == 0
+        {
+            yield_now().await;
+        }
+
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+
+        // Simulate what would happen if we suddenly switched users after the old token expired.
+        // The client expects a checkpoint of 100, for another user the service wouldn't have that
+        // counter yet. The client must request a checkpoint with the existing id, allowing the
+        // service to recognize that this device + user combo needs higher checkpoint ids.
+        sync.test
+            .http
+            .last_checkpoint_request
+            .store(0, Ordering::SeqCst);
+
+        request.send_keepalive(0).await;
+        request.channel.close();
+
+        while sync
+            .test
+            .http
+            .amount_of_checkpoint_requests
+            .load(Ordering::SeqCst)
+            < 2
+        {
+            yield_now().await;
+        }
+        assert_eq!(
+            sync.test
+                .http
+                .last_checkpoint_request
+                .load(Ordering::SeqCst),
+            100
+        );
+    });
+}
+
+#[test]
+fn reads_sync_lines_before_checkpoint_requests_are_ready() {
+    let sync = SyncStreamTest::new();
+    {
+        let mut guard = sync.test.http.before_checkpoint_response.lock().unwrap();
+        // Make /sync/checkpoint-request never return
+        *guard = Box::new(|| future::pending().boxed());
+    }
+
+    sync.connect_with_checkpoints();
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        request
+            .send_checkpoint(Checkpoint {
+                last_op_id: 0,
+                write_checkpoint: None,
+                buckets: vec![],
+                streams: vec![],
+            })
+            .await;
+        sync.wait_for_status(|s| s.is_downloading()).await;
+    });
 }
