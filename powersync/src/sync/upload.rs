@@ -1,14 +1,13 @@
 use std::{collections::HashSet, ops::ControlFlow, sync::Arc};
 
+use async_channel::Receiver;
 use futures_lite::{
-    FutureExt, StreamExt,
-    future::{self, Boxed},
+    StreamExt,
+    future::{self},
 };
 use log::{debug, info, warn};
 use powersync_sqlite_nostd::{Destructor, ResultCode};
 
-use crate::db::watch::ListenerConfiguration;
-use crate::sync::coordinator::SyncCoordinator;
 use crate::{
     SyncOptions,
     db::connection::{SqliteConnection, TransactionGuard},
@@ -16,207 +15,53 @@ use crate::{
 use crate::{
     db::internal::InnerPowerSyncState,
     error::PowerSyncError,
-    sync::{
-        MAX_OP_ID, coordinator::AsyncRequest, download::http::write_checkpoint,
-        status::UploadStatus,
-    },
+    sync::{MAX_OP_ID, download::http::write_checkpoint, status::UploadStatus},
 };
+use crate::{db::watch::ListenerConfiguration, sync::signals::SyncChannels};
 
-pub enum UploadActorCommand {
-    Connect(SyncOptions),
-    TriggerCrudUpload,
-    Disconnect,
-}
-
-pub struct UploadActor {
-    state: UploadActorState,
-    commands: async_channel::Receiver<AsyncRequest<UploadActorCommand>>,
+pub async fn crud_upload_loop(
     db: Arc<InnerPowerSyncState>,
-}
-
-impl UploadActor {
-    pub fn new(db: Arc<InnerPowerSyncState>, sync: &SyncCoordinator) -> Self {
-        let commands = sync.receive_upload_commands();
-
-        Self {
-            state: UploadActorState::Idle,
-            commands,
-            db,
-        }
-    }
-
-    pub async fn run(&mut self) {
-        while !self.state.is_stopped() {
-            self.handle_event().await
-        }
-    }
-
-    fn connected_state(
-        db: &Arc<InnerPowerSyncState>,
-        options: SyncOptions,
-    ) -> ConnectedUploadActor {
-        let mut tables = HashSet::new();
-        tables.insert("ps_crud".to_string());
-
-        let stream = db
-            .env
-            .pool
-            .update_notifiers()
-            .listen(ListenerConfiguration::if_matches(tables, false));
-        ConnectedUploadActor {
-            options,
-            crud_stream: stream.map(|_| ()).boxed(),
-        }
-    }
-
-    async fn state_transition_from_command_while_uploading(
-        commands: &async_channel::Receiver<AsyncRequest<UploadActorCommand>>,
-        db: &Arc<InnerPowerSyncState>,
-    ) -> Option<UploadActorState> {
-        match commands.recv().await {
-            Ok(command) => match command.command {
-                UploadActorCommand::TriggerCrudUpload => {
-                    // Already in progress, don't start another.
-                    None
-                }
-                UploadActorCommand::Connect(options) => {
-                    // TODO: Only abort if options have changed?
-                    Some(UploadActorState::Connected(Self::connected_state(
-                        db, options,
-                    )))
-                }
-                UploadActorCommand::Disconnect => Some(UploadActorState::Idle),
-            },
-            Err(_) => {
-                // There are no remaining instances of the PowerSync database left.
-                Some(UploadActorState::Stopped)
-            }
-        }
-    }
-
-    async fn handle_event(&mut self) {
-        let mut old_state = std::mem::replace(&mut self.state, UploadActorState::Idle);
-
-        self.state = match old_state {
-            UploadActorState::Idle => {
-                // Wait for a connect() call
-                let Ok(mut command) = self.commands.recv().await else {
-                    self.state = UploadActorState::Stopped;
-                    return;
-                };
-
-                match command.command {
-                    UploadActorCommand::Connect(options) => {
-                        let _ = command.response.send(());
-                        UploadActorState::Connected(Self::connected_state(&self.db, options))
-                    }
-                    UploadActorCommand::TriggerCrudUpload => {
-                        // We can't upload because we're not connected
-                        old_state
-                    }
-                    UploadActorCommand::Disconnect => {
-                        // Not connected, nothing to do.
-                        old_state
-                    }
-                }
-            }
-            UploadActorState::Connected(mut state) => {
-                enum Transition {
-                    StartUpload,
-                    Abort(UploadActorState),
-                }
-
-                let trigger_by_crud_change = async {
-                    state.crud_stream.next().await;
-                    Transition::StartUpload
-                };
-
-                let trigger_by_command = async {
-                    let Ok(mut command) = self.commands.recv().await else {
-                        self.state = UploadActorState::Stopped;
-                        return Transition::StartUpload;
-                    };
-
-                    let _ = command.response.send(());
-
-                    match command.command {
-                        UploadActorCommand::Connect(options) => Transition::Abort(
-                            UploadActorState::Connected(Self::connected_state(&self.db, options)),
-                        ),
-                        UploadActorCommand::TriggerCrudUpload => Transition::StartUpload,
-                        UploadActorCommand::Disconnect => Transition::Abort(UploadActorState::Idle),
-                    }
-                };
-
-                match future::race(trigger_by_crud_change, trigger_by_command).await {
-                    Transition::StartUpload => self.start_upload(state),
-                    Transition::Abort(state) => state,
-                }
-            }
-            UploadActorState::RunningUpload { ref mut result } => {
-                // A state transition can happen when the current upload is finished or when we
-                // receive a disconnect call.
-
-                let request =
-                    Self::state_transition_from_command_while_uploading(&self.commands, &self.db);
-
-                let upload_done = async {
-                    let state = result.await;
-                    self.db
-                        .status
-                        .update(|s| s.set_upload_state(UploadStatus::Idle));
-
-                    // The upload is done and we transition back into the  ready connected state to start the next iteration when needed.
-                    Some(UploadActorState::Connected(state))
-                };
-
-                future::race(request, upload_done)
-                    .await
-                    .unwrap_or(old_state)
-            }
-            UploadActorState::Stopped => panic!("No further state transitions after stopped"),
-        };
-    }
-
-    fn start_upload(&self, state: ConnectedUploadActor) -> UploadActorState {
-        let db = self.db.clone();
-        UploadActorState::RunningUpload {
-            result: async move {
-                let mut upload = CrudUpload {
-                    options: &state.options,
-                    db,
-                };
-                upload.run().await;
-
-                state
-            }
-            .boxed(),
-        }
-    }
-}
-
-enum UploadActorState {
-    Idle,
-    Connected(ConnectedUploadActor),
-    RunningUpload { result: Boxed<ConnectedUploadActor> },
-    Stopped,
-}
-
-impl UploadActorState {
-    fn is_stopped(&self) -> bool {
-        matches!(self, Self::Stopped)
-    }
-}
-
-struct ConnectedUploadActor {
     options: SyncOptions,
-    /// A stream emitting changes when the `ps_crud` table is updated locally.
-    crud_stream: futures_lite::stream::Boxed<()>,
+    channels: SyncChannels,
+    trigger_uploads: Receiver<()>,
+) {
+    let mut tables = HashSet::new();
+    tables.insert("ps_crud".to_string());
+
+    let mut stream = db
+        .env
+        .pool
+        .update_notifiers()
+        .listen(ListenerConfiguration::if_matches(tables, false));
+
+    loop {
+        let next_trigger = future::or(
+            async {
+                stream.next().await?;
+                Some(())
+            },
+            async {
+                trigger_uploads.recv().await.ok()?;
+                Some(())
+            },
+        );
+
+        let mut upload = CrudUpload {
+            options: &options,
+            db: &db,
+            channels: &channels,
+        };
+        upload.run().await;
+
+        db.status.update(|s| s.set_upload_state(UploadStatus::Idle));
+        next_trigger.await;
+    }
 }
 
 struct CrudUpload<'a> {
     options: &'a SyncOptions,
-    db: Arc<InnerPowerSyncState>,
+    channels: &'a SyncChannels,
+    db: &'a InnerPowerSyncState,
 }
 
 impl<'a> CrudUpload<'a> {
@@ -254,9 +99,7 @@ impl<'a> CrudUpload<'a> {
 
             // It's possible that pending CRUD uploads were preventing data from  syncing. So now
             // that that's completed, notify the download client in case it needs to retry.
-            if let Some(sync) = self.db.sync.upgrade() {
-                sync.mark_crud_uploads_completed().await;
-            }
+            self.channels.mark_crud_uploads_completed().await;
 
             return Ok(ControlFlow::Break(()));
         };

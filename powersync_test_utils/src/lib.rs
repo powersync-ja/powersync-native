@@ -10,7 +10,7 @@ use async_executor::Executor;
 use futures_lite::FutureExt;
 use log::LevelFilter;
 use powersync::{
-    env::{PowerSyncEnvironment, Timer},
+    env::{AsyncRuntime, PowerSyncEnvironment},
     schema::{Column, Schema, Table},
     *,
 };
@@ -27,7 +27,7 @@ pub struct DatabaseTest {
     pub dir: TempDir,
     pub http: Arc<MockSyncService>,
     timer: Arc<Mutex<MockTimer>>,
-    pub ex: Executor<'static>,
+    pub ex: Arc<Executor<'static>>,
 }
 
 impl Default for DatabaseTest {
@@ -41,7 +41,7 @@ impl Default for DatabaseTest {
             dir: TempDir::new("powersync_rust").expect("should create test directory"),
             http: Arc::new(MockSyncService::new()),
             timer: Default::default(),
-            ex: Executor::new(),
+            ex: Arc::new(Executor::new()),
         }
     }
 }
@@ -96,9 +96,11 @@ impl DatabaseTest {
         PowerSyncEnvironment::powersync_auto_extension().expect("should load core extension");
 
         let timer = self.timer.clone();
+        let executor = self.ex.clone();
 
         struct TestTimer {
             state: Arc<Mutex<MockTimer>>,
+            ex: Arc<Executor<'static>>,
         }
 
         struct TestDelay {
@@ -107,7 +109,7 @@ impl DatabaseTest {
             did_register: bool,
         }
 
-        impl Timer for TestTimer {
+        impl AsyncRuntime for TestTimer {
             fn delay_once(
                 &self,
                 duration: Duration,
@@ -121,6 +123,10 @@ impl DatabaseTest {
                     did_register: false,
                 }
                 .boxed()
+            }
+
+            fn spawn(&self, task: futures_lite::future::Boxed<()>) -> env::PowerSyncTask<()> {
+                self.ex.spawn(task).into()
             }
         }
 
@@ -155,7 +161,14 @@ impl DatabaseTest {
             }
         }
 
-        PowerSyncEnvironment::custom(self.http.clone().client(), pool, TestTimer { state: timer })
+        PowerSyncEnvironment::custom(
+            self.http.clone().client(),
+            pool,
+            TestTimer {
+                state: timer,
+                ex: executor,
+            },
+        )
     }
 
     pub fn default_schema() -> Schema {

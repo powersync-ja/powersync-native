@@ -12,7 +12,6 @@ use reqwest::StatusCode;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tokio::runtime::Runtime;
 
 pub struct TodoEntry {
     pub id: String,
@@ -83,20 +82,18 @@ pub struct TodoDatabase {
 }
 
 impl TodoDatabase {
-    pub fn new(rt: &Runtime) -> Self {
+    pub fn new() -> Self {
         let conn = Connection::open_in_memory().expect("should open connection");
         let env = PowerSyncEnvironment::custom(
             reqwest::Client::new(),
             ConnectionPool::single_connection(conn),
-            PowerSyncEnvironment::tokio_timer(),
+            PowerSyncEnvironment::tokio(),
         );
         let mut schema = Schema::default();
         schema.tables.push(TodoList::schema());
         schema.tables.push(TodoEntry::schema());
 
         let db = PowerSyncDatabase::new(env, schema);
-        db.async_tasks().spawn_with_tokio_runtime(rt);
-
         Self { db }
     }
 

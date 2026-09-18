@@ -146,10 +146,9 @@ mod tests {
     use super::*;
     use crate::{
         db::{internal::InnerPowerSyncState, pool::ConnectionPool},
-        env::{PowerSyncEnvironment, Timer},
+        env::{AsyncRuntime, PowerSyncEnvironment},
         http::{HttpClient, Request, ResponseBody},
         schema::Schema,
-        sync::coordinator::SyncCoordinator,
     };
 
     struct FailingClient;
@@ -179,9 +178,13 @@ mod tests {
 
     struct UnusedTimer;
 
-    impl Timer for UnusedTimer {
+    impl AsyncRuntime for UnusedTimer {
         fn delay_once(&self, _duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> {
             Box::pin(future::pending())
+        }
+
+        fn spawn(&self, _task: future::Boxed<()>) -> crate::env::PowerSyncTask<()> {
+            panic!("Unsupported in tests")
         }
     }
 
@@ -189,11 +192,9 @@ mod tests {
         PowerSyncEnvironment::powersync_auto_extension().unwrap();
         let pool = ConnectionPool::single_connection(Connection::open_in_memory().unwrap());
         let environment = PowerSyncEnvironment::custom(client, pool, UnusedTimer);
-        let coordinator = Arc::new(SyncCoordinator::default());
         let db = Arc::new(InnerPowerSyncState::new(
             environment,
             Schema::default().into(),
-            &coordinator,
         ));
         let credentials = PowerSyncCredentials {
             endpoint: "https://rust.unit.test.powersync.com/".to_string(),

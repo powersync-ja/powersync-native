@@ -3,10 +3,9 @@ use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
-use crate::db::async_support::AsyncDatabaseTasks;
 use crate::db::watch::ListenerConfiguration;
 use crate::schema::SchemaOrCustom;
-use crate::sync::coordinator::SyncCoordinator;
+use crate::sync::signals::SyncSignals;
 use crate::{
     CrudTransaction, SyncOptions,
     db::{
@@ -15,11 +14,10 @@ use crate::{
     },
     env::PowerSyncEnvironment,
     error::PowerSyncError,
-    sync::{download::DownloadActor, status::SyncStatusData, upload::UploadActor},
+    sync::status::SyncStatusData,
 };
-use futures_lite::{FutureExt, Stream, StreamExt};
+use futures_lite::{Stream, StreamExt};
 
-mod async_support;
 pub(crate) mod connection;
 pub mod core_extension;
 pub mod crud;
@@ -31,7 +29,7 @@ pub mod watch;
 
 #[derive(Clone)]
 pub struct PowerSyncDatabase {
-    sync: Arc<SyncCoordinator>,
+    sync: Arc<SyncSignals>,
     inner: Arc<InnerPowerSyncState>,
 }
 
@@ -55,36 +53,18 @@ impl PowerSyncDatabase {
     /// JSON object understood by the PowerSync SQLite core extension, it can also be passed as a
     /// [serde_json::value::RawValue] reference.
     pub fn new(env: PowerSyncEnvironment, schema: impl Into<SchemaOrCustom>) -> Self {
-        let coordinator = Arc::new(SyncCoordinator::default());
+        let coordinator = Arc::new(SyncSignals::default());
 
         Self {
-            inner: Arc::new(InnerPowerSyncState::new(env, schema.into(), &coordinator)),
+            inner: Arc::new(InnerPowerSyncState::new(env, schema.into())),
             sync: coordinator,
         }
-    }
-
-    /// Returns a collection of [AsyncDatabaseTasks] that need to be started before connecting this
-    /// PowerSync database to a PowerSync service.
-    ///
-    /// To start the tasks, see the documentation on [AsyncDatabaseTasks].
-    ///
-    /// By exposing these async tasks instead of starting them automatically, the SDK stays
-    /// executor-agnostic and is easier to access from C.
-    #[must_use = "Returned tasks still need to be spawned on an async runtime"]
-    pub fn async_tasks(&self) -> AsyncDatabaseTasks {
-        let mut downloads = DownloadActor::new(self.inner.clone(), &self.sync);
-        let mut uploads = UploadActor::new(self.inner.clone(), &self.sync);
-
-        AsyncDatabaseTasks::new(
-            async move { downloads.run().await }.boxed(),
-            async move { uploads.run().await }.boxed(),
-        )
     }
 
     /// Requests the download actor, started with [Self::download_actor], to start establishing a
     /// connection to the PowerSync service.
     pub async fn connect(&self, options: SyncOptions) {
-        self.sync.connect(options).await
+        self.sync.clone().connect(self.inner.clone(), options).await
     }
 
     /// If the sync client is currently connected, requests it to disconnect.

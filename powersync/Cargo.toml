@@ -18,7 +18,7 @@ crate-type = ["lib"]
 default = ["rusqlite"]
 
 tokio = ["dep:tokio"]
-smol = ["dep:async-io"]
+smol = ["dep:async-io", "dep:async-executor"]
 reqwest = ["dep:reqwest"]
 rusqlite = ["dep:rusqlite"]
 ffi = []
@@ -26,7 +26,9 @@ ffi = []
 [dependencies]
 async-channel = "2.5.0"
 async-lock = "3.4.1"
+async-executor = { version = "1.14.0", optional = true }
 async-io = { version = "2.6.0", optional = true }
+async-task = "4.7.1"
 async-trait = "0.1.89"
 async-oneshot = "0.5.9"
 atomic_enum = "0.3.0"
@@ -50,7 +52,6 @@ num-traits = "0.2.19"
 
 [dev-dependencies]
 async-executor = "1.13.3"
-async-task = "4.7.1"
 futures-lite = "2.6.1"
 futures-test = "0.3.31"
 powersync_test_utils = { path = "../powersync_test_utils" }

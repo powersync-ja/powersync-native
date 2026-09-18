@@ -42,11 +42,15 @@ impl SyncOptions {
         env: &PowerSyncEnvironment,
     ) -> impl Future<Output = ()> + 'static {
         let delay = self.retry_delay;
-        let timer = env.timer.clone();
+        let future = if delay > Duration::ZERO {
+            Some(env.runtime.delay_once(delay))
+        } else {
+            None
+        };
 
         async move {
-            if delay > Duration::ZERO {
-                timer.delay_once(delay).await
+            if let Some(future) = future {
+                future.await;
             } else {
                 yield_now().await
             }
