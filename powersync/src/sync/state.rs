@@ -73,11 +73,11 @@ impl CheckpointStateSignals {
         &self,
         wake_download_loop: bool,
     ) -> Result<(), CheckpointError> {
+        let mut receiver = self.state_channel.1.activate_cloned();
         let mut state = {
             let waiters = self.state_and_waiter.lock().unwrap();
             waiters.0.clone()
         };
-        let mut receiver = self.state_channel.1.activate_cloned();
 
         loop {
             match state {
