@@ -154,6 +154,13 @@ impl SyncStatusData {
         }
     }
 
+    pub(crate) fn is_checkpoint_request_applied(&self, id: i64) -> bool {
+        let Some(last_applied) = self.downloading.last_applied_checkpoint_request else {
+            return false;
+        };
+        return last_applied >= id;
+    }
+
     /// Returns an [EventListener] that completes once this data is stale, or returns [None]
     /// immediately if this is already stale.
     pub(crate) fn listen_for_changes(&self) -> Option<EventListener> {

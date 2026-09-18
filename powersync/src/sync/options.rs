@@ -74,7 +74,7 @@ pub enum CheckpointMode {
     Requests(RequestsCheckpointMode),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RequestsCheckpointMode {
     pub(crate) retry_delay: Duration,
 }

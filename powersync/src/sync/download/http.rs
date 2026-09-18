@@ -105,7 +105,6 @@ pub async fn checkpoint_request(
     db: &InnerPowerSyncState,
     connector: &dyn BackendConnector,
     body: &CheckpointRequestPayload,
-    auth: PowerSyncCredentials,
 ) -> Result<i64, PowerSyncError> {
     if let Some(future) =
         connector.post_checkpoint_request(&body.client_id, body.checkpoint_request_id)
@@ -113,6 +112,7 @@ pub async fn checkpoint_request(
         return future.await;
     }
 
+    let auth = connector.fetch_credentials().await?;
     let url = auth.parsed_endpoint("sync/checkpoint-request")?;
 
     let body = serde_json::to_vec(body)?;
