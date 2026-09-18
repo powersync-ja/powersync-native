@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::BackendConnector;
 use crate::http::{Request, Response};
+use crate::sync::checkpoint::CheckpointError;
 use crate::sync::instruction::CheckpointRequestPayload;
 use crate::util::LineSplitter;
 use crate::{
@@ -131,6 +132,13 @@ pub async fn checkpoint_request(
     };
 
     let response = db.env.client.send(request).await?;
+    if response.status == 404 {
+        return Err(RawPowerSyncError::Checkpoint {
+            error: CheckpointError::InstanceNotSupported,
+        }
+        .into());
+    }
+
     check_ok(response.status)?;
 
     #[derive(Deserialize)]
