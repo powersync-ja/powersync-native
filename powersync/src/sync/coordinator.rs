@@ -1,143 +1,168 @@
-use std::sync::RwLock;
+use async_lock::Mutex as AsyncMutex;
+use std::sync::Arc;
 
 use async_channel::{Receiver, Sender};
-use async_oneshot::oneshot;
 
 use crate::{
     SyncOptions,
+    db::internal::InnerPowerSyncState,
+    env::PowerSyncTask,
+    error::PowerSyncError,
     sync::{
-        download::DownloadActorCommand, streams::ChangedSyncSubscriptions,
-        upload::UploadActorCommand,
+        download::{DownloadEvent, download_loop},
+        streams::ChangedSyncSubscriptions,
+        upload::crud_upload_loop,
     },
 };
 
-pub struct AsyncRequest<T> {
-    pub command: T,
-    pub response: async_oneshot::Sender<()>,
-}
-
-impl<T> AsyncRequest<T> {
-    pub fn new(command: T) -> (Self, async_oneshot::Receiver<()>) {
-        let (tx, rx) = oneshot();
-        (
-            Self {
-                command,
-                response: tx,
-            },
-            rx,
-        )
-    }
-}
-
-/// Implements `connect()` and `disconnect()` by dispatching messages to the upload and download
-/// actors.
+/// Implements `connect()` and `disconnect()` by starting asynchronous tasks driving those loops.
 ///
-/// Since actors only have access to the receiving end of their channels, dropping the coordinator
-/// will also terminate all actors (albeit asynchronously).
+/// Dropping the coordinator will also terminate sync tasks (albeit asynchronously).
 #[derive(Default)]
 pub struct SyncCoordinator {
-    control_downloads: RwLock<Option<Sender<AsyncRequest<DownloadActorCommand>>>>,
-    control_uploads: RwLock<Option<Sender<AsyncRequest<UploadActorCommand>>>>,
+    task: AsyncMutex<Option<SyncTasks>>,
 }
 
 impl SyncCoordinator {
-    pub async fn connect(&self, options: SyncOptions) {
-        self.download_actor_request(DownloadActorCommand::Connect(options.clone()))
-            .await;
-        self.upload_actor_request(UploadActorCommand::Connect(options))
-            .await;
+    pub async fn connect(self: Arc<Self>, db: Arc<InnerPowerSyncState>, options: SyncOptions) {
+        self.disconnect(&db).await;
+
+        let mut guard = self.task.lock().await;
+
+        let (channels, download_receive, uploads_receive) = SyncChannels::create();
+
+        let downloads = db.env.spawn(download_loop(
+            db.clone(),
+            channels.clone(),
+            options.clone(),
+            download_receive,
+        ));
+        let uploads = db.env.spawn(crud_upload_loop(
+            db.clone(),
+            options,
+            channels.clone(),
+            uploads_receive,
+        ));
+
+        *guard = Some(SyncTasks {
+            channels,
+            uploads: Some(uploads),
+            downloads: Some(downloads),
+        });
     }
 
-    pub async fn disconnect(&self) {
-        self.download_actor_request(DownloadActorCommand::Disconnect)
-            .await;
-        self.upload_actor_request(UploadActorCommand::Disconnect)
-            .await;
+    pub async fn disconnect(&self, db: &InnerPowerSyncState) {
+        let mut guard = self.task.lock().await;
+
+        if let Some(task) = guard.take() {
+            task.cancel().await;
+            let _ = Self::fetch_offline_sync_status(db).await;
+        }
     }
 
-    /// Requests a round of CRUD uploads.
-    pub async fn trigger_crud_uploads(&self) {
-        self.upload_actor_request(UploadActorCommand::TriggerCrudUpload)
-            .await;
-    }
-
-    /// Marks CRUD uploads as complete, allowing the download client to retry if a previous
-    /// checkpoint was blocked by pending uploads.
-    pub async fn mark_crud_uploads_completed(&self) {
-        self.download_actor_request(DownloadActorCommand::CrudUploadComplete)
-            .await;
-    }
-
-    /// Causes the download actor to call `powersync_offline_sync_status()` and emit those results.
+    /// If we're offline, update the offline sync status and emit it into the database.
     ///
     /// This is used after adding a new subscription to include it in the sync status even if we're
     /// disconnected.
     /// This is a no-op while connected.
-    pub async fn resolve_offline_sync_status(&self) {
-        self.download_actor_request(DownloadActorCommand::ResolveOfflineSyncStatusIfNotConnected)
-            .await;
+    pub async fn resolve_offline_sync_status(
+        &self,
+        db: &InnerPowerSyncState,
+    ) -> Result<(), PowerSyncError> {
+        let guard = self.task.lock().await;
+        if guard.is_some() {
+            return Ok(());
+        }
+
+        Self::fetch_offline_sync_status(db).await
+    }
+
+    async fn fetch_offline_sync_status(db: &InnerPowerSyncState) -> Result<(), PowerSyncError> {
+        let writer = db.writer().await?;
+        db.status
+            .update(|s| s.resolve_offline_state(writer.sqlite_connection()))
     }
 
     /// Handle the set of active sync stream subscriptions changing.
     ///
     /// This is a no-op if not connected.
     pub async fn handle_subscriptions_changed(&self, update: ChangedSyncSubscriptions) {
-        self.download_actor_request(DownloadActorCommand::SubscriptionsChanged(update))
-            .await;
-    }
+        let Some(channel) = ({
+            let guard = self.task.lock().await;
 
-    fn install_actor_channel<T>(
-        slot: &RwLock<Option<Sender<AsyncRequest<T>>>>,
-    ) -> Receiver<AsyncRequest<T>> {
-        let mut slot = slot.write().unwrap();
-        if slot.is_some() {
-            drop(slot);
-            panic!("Actor already installed")
-        }
-
-        let (send, receive) = async_channel::bounded(1);
-        *slot = Some(send);
-        receive
-    }
-
-    fn obtain_channel<T>(
-        slot: &RwLock<Option<Sender<AsyncRequest<T>>>>,
-    ) -> Sender<AsyncRequest<T>> {
-        let slot = slot.read().unwrap();
-        let Some(slot) = &*slot else {
-            panic!("Actor has not been registered");
+            guard
+                .as_ref()
+                .map(|tasks| tasks.channels.local_download_events.clone())
+        }) else {
+            return;
         };
 
-        slot.clone()
+        let _ = channel
+            .send(DownloadEvent::UpdateSubscriptions { keys: update.0 })
+            .await;
+    }
+}
+
+struct SyncTasks {
+    channels: SyncChannels,
+    downloads: Option<PowerSyncTask>,
+    uploads: Option<PowerSyncTask>,
+}
+
+impl SyncTasks {
+    pub async fn cancel(mut self) {
+        if let Some(task) = self.downloads.take() {
+            task.cancel_and_join().await;
+        }
+        if let Some(task) = self.uploads.take() {
+            task.cancel_and_join().await;
+        }
+    }
+}
+
+impl Drop for SyncTasks {
+    fn drop(&mut self) {
+        if let Some(task) = self.downloads.take() {
+            task.cancel();
+        }
+        if let Some(task) = self.uploads.take() {
+            task.cancel();
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SyncChannels {
+    local_download_events: Sender<DownloadEvent>,
+    trigger_upload: Sender<()>,
+}
+
+impl SyncChannels {
+    pub fn create() -> (Self, Receiver<DownloadEvent>, Receiver<()>) {
+        let (download_send, download_receive) = async_channel::unbounded();
+        let (uploads_send, uploads_receive) = async_channel::bounded(1);
+
+        (
+            Self {
+                local_download_events: download_send,
+                trigger_upload: uploads_send,
+            },
+            download_receive,
+            uploads_receive,
+        )
     }
 
-    pub fn receive_download_commands(&self) -> Receiver<AsyncRequest<DownloadActorCommand>> {
-        Self::install_actor_channel(&self.control_downloads)
+    pub fn trigger_crud_upload(&self) {
+        // If an existing crud request is already buffered in the channel, we can replace it.
+        let _ = self.trigger_upload.force_send(());
     }
 
-    pub fn receive_upload_commands(&self) -> Receiver<AsyncRequest<UploadActorCommand>> {
-        Self::install_actor_channel(&self.control_uploads)
-    }
-
-    async fn download_actor_request(&self, cmd: DownloadActorCommand) {
-        let downloads = Self::obtain_channel(&self.control_downloads);
-
-        let (request, response) = AsyncRequest::new(cmd);
-        downloads
-            .send(request)
-            .await
-            .expect("Download actor not running, start it with download_actor()");
-        let _ = response.await;
-    }
-
-    async fn upload_actor_request(&self, cmd: UploadActorCommand) {
-        let uploads = Self::obtain_channel(&self.control_uploads);
-
-        let (request, response) = AsyncRequest::new(cmd);
-        uploads
-            .send(request)
-            .await
-            .expect("Upload actor not running, start it with upload_actor()");
-        let _ = response.await;
+    /// Marks CRUD uploads as complete, allowing the download client to retry if a previous
+    /// checkpoint was blocked by pending uploads.
+    pub async fn mark_crud_uploads_completed(&self) {
+        let _ = self
+            .local_download_events
+            .send(DownloadEvent::CompletedUpload)
+            .await;
     }
 }

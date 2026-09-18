@@ -38,7 +38,7 @@ impl Drop for SelectedTodoList {
 
 impl TodoListApp {
     pub fn new(rt: Runtime) -> Self {
-        let db = TodoDatabase::new(&rt);
+        let db = TodoDatabase::new();
 
         Self {
             rt,

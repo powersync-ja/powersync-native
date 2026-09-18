@@ -1,6 +1,8 @@
 ## 0.0.8 (unreleased)
 
-- __Breaking__: Timers on `PowerSyncEnvironment::custom` are now passed by value.
+- __Breaking__: `PowerSyncEnvironment::custom` now needs a way to spawn async
+  tasks. Replace `tokio_timer()` or `async_io_timer()` timers with
+  `tokio()` or `async_io()`, respectively.
 - Don't mark sync status as connected when connection fails.
 - Fix sync client blocking writer for longer than necessary.
 - Set cache size and busy timeout on all connections instead of just the writer.

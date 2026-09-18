@@ -4,10 +4,12 @@ use futures_lite::{StreamExt, future, stream::Boxed as BoxedStream};
 use log::{debug, info, trace, warn};
 use powersync_sqlite_nostd::{Destructor, ManagedStmt, ResultCode};
 use serde::Serialize;
+use serde_json::Map;
 use serde_json::value::RawValue;
 
 use crate::db::connection::{SqliteConnection, TransactionGuard};
 use crate::schema::SchemaOrCustom;
+use crate::sync::coordinator::SyncChannels;
 use crate::{
     SyncOptions,
     db::internal::InnerPowerSyncState,
@@ -19,26 +21,42 @@ use crate::{
     },
 };
 
-pub struct DownloadClient {
+pub struct DownloadClient<'a> {
     db: Arc<InnerPowerSyncState>,
+    channels: &'a SyncChannels,
+    receive_commands: &'a async_channel::Receiver<DownloadEvent>,
+    options: &'a SyncOptions,
     stream: Option<BoxedStream<Result<DownloadEvent, PowerSyncError>>>,
-    receive_commands: async_channel::Receiver<DownloadEvent>,
 }
 
-impl DownloadClient {
+impl<'a> DownloadClient<'a> {
     pub fn new(
         db: Arc<InnerPowerSyncState>,
-        events: async_channel::Receiver<DownloadEvent>,
+        channels: &'a SyncChannels,
+        events: &'a async_channel::Receiver<DownloadEvent>,
+        options: &'a SyncOptions,
     ) -> Self {
         Self {
             db,
-            stream: None,
+            channels,
             receive_commands: events,
+            options,
+            stream: None,
         }
     }
 
-    pub async fn run(mut self, options: SyncOptions) -> Result<CloseSyncStream, PowerSyncError> {
-        'event: loop {
+    pub async fn run(mut self) -> Result<CloseSyncStream, PowerSyncError> {
+        let start = StartDownloadIteration {
+            parameters: serde_json::Value::Object(Map::new()),
+            schema: self.db.schema.clone(),
+            include_defaults: self.options.include_default_streams,
+            active_streams: self.db.current_streams.collect_active_streams(),
+        };
+        if let Some(end) = self.handle_event(DownloadEvent::Start(start)).await? {
+            return Ok(end);
+        }
+
+        loop {
             let event = match &mut self.stream {
                 Some(stream) => {
                     future::or(
@@ -50,57 +68,66 @@ impl DownloadClient {
                 None => Self::receive_command(&self.receive_commands).await,
             }?;
 
-            trace!("Handling event {event:?}");
-            let instructions = {
-                let mut conn = self.db.writer().await?;
-                event.invoke_control(conn.sqlite_connection_mut())?
-            };
-
-            for instr in instructions {
-                trace!("Handling instruction {instr:?}");
-
-                match instr {
-                    Instruction::LogLine { severity, line } => match severity {
-                        LogSeverity::Debug => debug!("{}", line),
-                        LogSeverity::Info => info!("{}", line),
-                        LogSeverity::Warning => warn!("{}", line),
-                    },
-                    Instruction::UpdateSyncStatus { status } => {
-                        self.db.status.update(|s| s.update_from_core(status))
-                    }
-                    Instruction::EstablishSyncStream { request } => {
-                        trace!("Establishing sync stream with {request}");
-                        Self::establish_sync_stream(
-                            Arc::clone(&self.db),
-                            &mut self.stream,
-                            request,
-                            &options,
-                        )
-                        .await?;
-
-                        // Trigger a crud upload after establishing a sync stream.
-                        if let Some(sync) = self.db.sync.upgrade() {
-                            sync.trigger_crud_uploads().await;
-                        }
-                    }
-                    Instruction::FetchCredentials { .. } => {
-                        // TODO: Pre-fetching credentials
-                        // If did_expire is true, the core extension will also emit a stop
-                        // instruction. So we don't have to handle that separately.
-                    }
-                    Instruction::CloseSyncStream(close) => {
-                        break 'event Ok(close);
-                    }
-                    Instruction::FlushFileSystem {} => {
-                        // Not applicable outside of Dart web.
-                    }
-                    Instruction::DidCompleteSync {} => self
-                        .db
-                        .status
-                        .update(|status| status.clear_download_errors()),
-                }
+            if let Some(end) = self.handle_event(event).await? {
+                return Ok(end);
             }
         }
+    }
+
+    async fn handle_event(
+        &mut self,
+        event: DownloadEvent,
+    ) -> Result<Option<CloseSyncStream>, PowerSyncError> {
+        trace!("Handling event {event:?}");
+        let instructions = {
+            let mut conn = self.db.writer().await?;
+            event.invoke_control(conn.sqlite_connection_mut())?
+        };
+
+        for instr in instructions {
+            trace!("Handling instruction {instr:?}");
+
+            match instr {
+                Instruction::LogLine { severity, line } => match severity {
+                    LogSeverity::Debug => debug!("{}", line),
+                    LogSeverity::Info => info!("{}", line),
+                    LogSeverity::Warning => warn!("{}", line),
+                },
+                Instruction::UpdateSyncStatus { status } => {
+                    self.db.status.update(|s| s.update_from_core(status))
+                }
+                Instruction::EstablishSyncStream { request } => {
+                    trace!("Establishing sync stream with {request}");
+                    Self::establish_sync_stream(
+                        Arc::clone(&self.db),
+                        &mut self.stream,
+                        request,
+                        self.options,
+                    )
+                    .await?;
+
+                    // Trigger a crud upload after establishing a sync stream.
+                    self.channels.trigger_crud_upload();
+                }
+                Instruction::FetchCredentials { .. } => {
+                    // TODO: Pre-fetching credentials
+                    // If did_expire is true, the core extension will also emit a stop
+                    // instruction. So we don't have to handle that separately.
+                }
+                Instruction::CloseSyncStream(close) => {
+                    return Ok(Some(close));
+                }
+                Instruction::FlushFileSystem {} => {
+                    // Not applicable outside of Dart web.
+                }
+                Instruction::DidCompleteSync {} => self
+                    .db
+                    .status
+                    .update(|status| status.clear_download_errors()),
+            }
+        }
+
+        Ok(None)
     }
 
     async fn establish_sync_stream(
