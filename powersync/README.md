@@ -39,29 +39,8 @@ This crate provides asynchronous APIs to:
 3. Stream changes from the PowerSync service to your local database.
 4. Upload local writes to your backend.
 
-For maximum flexibility, the `powersync` crate is executor-agnostic and can run on async runtime. All tasks that run
-concurrently to the main application need to be spawned before starting PowerSync:
-
-```Rust
-#[tokio::main]
-async fn main() {
-    let db = PowerSyncDatabase::new(env, schema);
-    db.async_tasks().spawn_with(|future| {
-        tokio::spawn(future);
-    });
-}
-```
-
-The crate generally operates on a bring-your-own-runtime assumption, although optional features are available for
-popular runtimes. The above snippet can be simplified to:
-
-```Rust
-#[tokio::main]
-async fn main() {
-    let db = PowerSyncDatabase::new(env, schema);
-    db.async_tasks().spawn_with_tokio();
-}
-```
+For maximum flexibility, the `powersync` crate is executor-agnostic and can run on any async runtime,
+with builtin support for Tokio and smol-rs available through optional features.
 
 ### Running queries
 
