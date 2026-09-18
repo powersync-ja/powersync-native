@@ -9,7 +9,7 @@ use serde_json::value::RawValue;
 
 use crate::db::connection::{SqliteConnection, TransactionGuard};
 use crate::schema::SchemaOrCustom;
-use crate::sync::signals::SyncChannels;
+use crate::sync::coordinator::SyncChannels;
 use crate::{
     SyncOptions,
     db::internal::InnerPowerSyncState,

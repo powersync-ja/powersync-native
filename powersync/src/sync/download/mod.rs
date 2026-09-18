@@ -6,7 +6,7 @@ use std::sync::Arc;
 use log::warn;
 pub use sync_iteration::{DownloadClient, DownloadEvent};
 
-use crate::{SyncOptions, db::internal::InnerPowerSyncState, sync::signals::SyncChannels};
+use crate::{SyncOptions, db::internal::InnerPowerSyncState, sync::coordinator::SyncChannels};
 
 pub async fn download_loop(
     db: Arc<InnerPowerSyncState>,

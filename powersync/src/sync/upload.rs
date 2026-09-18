@@ -17,7 +17,7 @@ use crate::{
     error::PowerSyncError,
     sync::{MAX_OP_ID, download::http::write_checkpoint, status::UploadStatus},
 };
-use crate::{db::watch::ListenerConfiguration, sync::signals::SyncChannels};
+use crate::{db::watch::ListenerConfiguration, sync::coordinator::SyncChannels};
 
 pub async fn crud_upload_loop(
     db: Arc<InnerPowerSyncState>,

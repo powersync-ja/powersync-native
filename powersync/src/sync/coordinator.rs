@@ -15,20 +15,18 @@ use crate::{
     },
 };
 
-/// Implements `connect()` and `disconnect()` by dispatching messages to the upload and download
-/// actors.
+/// Implements `connect()` and `disconnect()` by starting asynchronous tasks driving those loops.
 ///
-/// Since actors only have access to the receiving end of their channels, dropping the coordinator
-/// will also terminate all actors (albeit asynchronously).
+/// Dropping the coordinator will also terminate sync tasks (albeit asynchronously).
 #[derive(Default)]
-pub struct SyncSignals {
+pub struct SyncCoordinator {
     task: AsyncMutex<Option<SyncTasks>>,
     channels: Mutex<Option<SyncChannels>>,
 }
 
-impl SyncSignals {
+impl SyncCoordinator {
     pub async fn connect(self: Arc<Self>, db: Arc<InnerPowerSyncState>, options: SyncOptions) {
-        self.disconnect().await;
+        self.disconnect(&db).await;
 
         let mut guard = self.task.lock().await;
 
@@ -58,11 +56,12 @@ impl SyncSignals {
         });
     }
 
-    pub async fn disconnect(&self) {
+    pub async fn disconnect(&self, db: &InnerPowerSyncState) {
         let mut guard = self.task.lock().await;
 
         if let Some(task) = guard.take() {
             task.cancel().await;
+            let _ = Self::fetch_offline_sync_status(db).await;
         }
     }
 
@@ -80,6 +79,10 @@ impl SyncSignals {
             return Ok(());
         }
 
+        Self::fetch_offline_sync_status(db).await
+    }
+
+    async fn fetch_offline_sync_status(db: &InnerPowerSyncState) -> Result<(), PowerSyncError> {
         let writer = db.writer().await?;
         db.status
             .update(|s| s.resolve_offline_state(writer.sqlite_connection()))
@@ -107,7 +110,7 @@ impl SyncSignals {
 struct SyncTasks {
     downloads: Option<PowerSyncTask>,
     uploads: Option<PowerSyncTask>,
-    signals: Arc<SyncSignals>,
+    signals: Arc<SyncCoordinator>,
 }
 
 impl SyncTasks {

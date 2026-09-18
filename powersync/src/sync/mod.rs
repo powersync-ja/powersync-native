@@ -1,9 +1,9 @@
 pub mod connector;
+pub mod coordinator;
 pub mod download;
 mod instruction;
 pub mod options;
 pub mod progress;
-pub mod signals;
 pub mod status;
 pub mod stream_priority;
 pub mod streams;

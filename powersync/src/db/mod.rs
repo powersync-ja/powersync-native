@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::db::watch::ListenerConfiguration;
 use crate::schema::SchemaOrCustom;
-use crate::sync::signals::SyncSignals;
+use crate::sync::coordinator::SyncCoordinator;
 use crate::{
     CrudTransaction, SyncOptions,
     db::{
@@ -29,7 +29,7 @@ pub mod watch;
 
 #[derive(Clone)]
 pub struct PowerSyncDatabase {
-    sync: Arc<SyncSignals>,
+    sync: Arc<SyncCoordinator>,
     inner: Arc<InnerPowerSyncState>,
 }
 
@@ -53,7 +53,7 @@ impl PowerSyncDatabase {
     /// JSON object understood by the PowerSync SQLite core extension, it can also be passed as a
     /// [serde_json::value::RawValue] reference.
     pub fn new(env: PowerSyncEnvironment, schema: impl Into<SchemaOrCustom>) -> Self {
-        let coordinator = Arc::new(SyncSignals::default());
+        let coordinator = Arc::new(SyncCoordinator::default());
 
         Self {
             inner: Arc::new(InnerPowerSyncState::new(env, schema.into())),
@@ -69,7 +69,7 @@ impl PowerSyncDatabase {
 
     /// If the sync client is currently connected, requests it to disconnect.
     pub async fn disconnect(&self) {
-        self.sync.disconnect().await
+        self.sync.disconnect(&self.inner).await
     }
 
     /// Returns an asynchronous [Stream] emitting an empty event every time one of the specified
