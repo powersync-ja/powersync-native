@@ -1,4 +1,3 @@
-pub mod client;
 pub mod connector;
 pub mod download;
 mod instruction;

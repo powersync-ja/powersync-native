@@ -1,7 +1,6 @@
 use async_lock::Mutex as AsyncMutex;
 use std::sync::{Arc, Mutex};
 
-use super::client;
 use async_channel::{Receiver, Sender};
 
 use crate::{
@@ -9,7 +8,11 @@ use crate::{
     db::internal::InnerPowerSyncState,
     env::PowerSyncTask,
     error::PowerSyncError,
-    sync::{download::DownloadEvent, streams::ChangedSyncSubscriptions},
+    sync::{
+        download::{DownloadEvent, download_loop},
+        streams::ChangedSyncSubscriptions,
+        upload::crud_upload_loop,
+    },
 };
 
 /// Implements `connect()` and `disconnect()` by dispatching messages to the upload and download
@@ -19,7 +22,7 @@ use crate::{
 /// will also terminate all actors (albeit asynchronously).
 #[derive(Default)]
 pub struct SyncSignals {
-    task: AsyncMutex<Option<(async_oneshot::Sender<()>, PowerSyncTask)>>,
+    task: AsyncMutex<Option<SyncTasks>>,
     channels: Mutex<Option<SyncChannels>>,
 }
 
@@ -28,19 +31,38 @@ impl SyncSignals {
         self.disconnect().await;
 
         let mut guard = self.task.lock().await;
-        let (abort_controller, abort_signal) = async_oneshot::oneshot();
 
-        let task = client::spawn(db, options, self.clone(), abort_signal);
-        *guard = Some((abort_controller, task));
+        let (channels, download_receive, uploads_receive) = SyncChannels::create();
+        {
+            let mut guard = self.channels.lock().unwrap();
+            *guard = Some(channels.clone());
+        }
+
+        let downloads = db.env.spawn(download_loop(
+            db.clone(),
+            channels.clone(),
+            options.clone(),
+            download_receive,
+        ));
+        let uploads = db.env.spawn(crud_upload_loop(
+            db.clone(),
+            options,
+            channels.clone(),
+            uploads_receive,
+        ));
+
+        *guard = Some(SyncTasks {
+            signals: self.clone(),
+            uploads: Some(uploads),
+            downloads: Some(downloads),
+        });
     }
 
     pub async fn disconnect(&self) {
         let mut guard = self.task.lock().await;
 
-        if let Some((mut request_cancellation, task)) = guard.take() {
-            // Gracefully shut down the sync task by requesting a cancellation.
-            let _ = request_cancellation.send(());
-            task.join().await;
+        if let Some(task) = guard.take() {
+            task.cancel().await;
         }
     }
 
@@ -80,17 +102,36 @@ impl SyncSignals {
                 .await;
         }
     }
+}
 
-    pub fn install_channels(self: Arc<Self>, channels: SyncChannels) -> impl Drop + 'static {
-        {
-            let mut guard = self.channels.lock().unwrap();
-            *guard = Some(channels);
+struct SyncTasks {
+    downloads: Option<PowerSyncTask>,
+    uploads: Option<PowerSyncTask>,
+    signals: Arc<SyncSignals>,
+}
+
+impl SyncTasks {
+    pub async fn cancel(mut self) {
+        if let Some(task) = self.downloads.take() {
+            task.cancel_and_join().await;
+        }
+        if let Some(task) = self.uploads.take() {
+            task.cancel_and_join().await;
+        }
+    }
+}
+
+impl Drop for SyncTasks {
+    fn drop(&mut self) {
+        if let Some(task) = self.downloads.take() {
+            task.cancel();
+        }
+        if let Some(task) = self.uploads.take() {
+            task.cancel();
         }
 
-        scopeguard::guard(self, |signals| {
-            let mut guard = signals.channels.lock().unwrap();
-            *guard = None;
-        })
+        let mut guard = self.signals.channels.lock().unwrap();
+        *guard = None;
     }
 }
 

@@ -121,11 +121,25 @@ pub struct PowerSyncTask<T = ()> {
 }
 
 impl<T> PowerSyncTask<T> {
-    pub async fn cancel(self) -> Option<T> {
+    pub fn cancel(self) {
         match self.raw {
             #[cfg(feature = "tokio")]
             RawPowerSyncTask::Tokio { task } => {
                 task.abort();
+            }
+            RawPowerSyncTask::AsyncTask { task } => {
+                // async_task cancels tasks when their handle is dropped.
+                drop(task)
+            }
+        }
+    }
+
+    pub async fn cancel_and_join(self) -> Option<T> {
+        match self.raw {
+            #[cfg(feature = "tokio")]
+            RawPowerSyncTask::Tokio { task } => {
+                task.abort();
+
                 match task.await {
                     Ok(e) => Some(e),
                     Err(e) => {
