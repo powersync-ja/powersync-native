@@ -9,6 +9,7 @@ use crate::{
     env::PowerSyncTask,
     error::PowerSyncError,
     sync::{
+        checkpoint::repost_unacknowledged_checkpoints,
         download::{DownloadEvent, download_loop},
         state::CheckpointStateSignals,
         streams::ChangedSyncSubscriptions,
@@ -40,15 +41,21 @@ impl SyncCoordinator {
         ));
         let uploads = db.env.spawn(crud_upload_loop(
             db.clone(),
-            options,
+            options.clone(),
             channels.clone(),
             uploads_receive,
+        ));
+        let checkpoints = db.env.spawn(repost_unacknowledged_checkpoints(
+            db.clone(),
+            channels.clone(),
+            options,
         ));
 
         *guard = Some(SyncTasks {
             channels,
             uploads: Some(uploads),
             downloads: Some(downloads),
+            retried_checkpoints: Some(checkpoints),
         });
     }
 
@@ -108,26 +115,33 @@ struct SyncTasks {
     channels: SyncChannels,
     downloads: Option<PowerSyncTask>,
     uploads: Option<PowerSyncTask>,
+    retried_checkpoints: Option<PowerSyncTask>,
 }
 
 impl SyncTasks {
+    fn tasks(&mut self) -> [&mut Option<PowerSyncTask>; 3] {
+        [
+            &mut self.downloads,
+            &mut self.uploads,
+            &mut self.retried_checkpoints,
+        ]
+    }
+
     pub async fn cancel(mut self) {
-        if let Some(task) = self.downloads.take() {
-            task.cancel_and_join().await;
-        }
-        if let Some(task) = self.uploads.take() {
-            task.cancel_and_join().await;
+        for maybe_task in self.tasks() {
+            if let Some(task) = maybe_task.take() {
+                task.cancel_and_join().await;
+            }
         }
     }
 }
 
 impl Drop for SyncTasks {
     fn drop(&mut self) {
-        if let Some(task) = self.downloads.take() {
-            task.cancel();
-        }
-        if let Some(task) = self.uploads.take() {
-            task.cancel();
+        for maybe_task in self.tasks() {
+            if let Some(task) = maybe_task.take() {
+                task.cancel();
+            }
         }
     }
 }

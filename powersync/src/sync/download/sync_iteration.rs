@@ -182,8 +182,7 @@ impl<'a> DownloadClient<'a> {
         connector: Arc<dyn BackendConnector>,
         request: CheckpointRequestPayload,
     ) -> Result<(), PowerSyncError> {
-        let credentials = connector.fetch_credentials().await?;
-        let response = checkpoint_request(&db, connector.as_ref(), &request, credentials).await?;
+        let response = checkpoint_request(&db, connector.as_ref(), &request).await?;
         db.seed_checkpoint_request_id(response).await?;
 
         Ok(())

@@ -15,7 +15,7 @@ pub type Result<T> = std::result::Result<T, PowerSyncError>;
 /// [RawPowerSyncError] enum type).
 #[derive(Debug, Clone)]
 pub struct PowerSyncError {
-    inner: Arc<RawPowerSyncError>,
+    pub(crate) inner: Arc<RawPowerSyncError>,
 }
 
 impl PowerSyncError {

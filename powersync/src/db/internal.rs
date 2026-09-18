@@ -120,12 +120,15 @@ impl InnerPowerSyncState {
     }
 
     pub async fn next_checkpoint_request_id(&self) -> Result<i64, PowerSyncError> {
-        let mut writer = self.writer().await?;
-        let writer = TransactionGuard::new(writer.sqlite_connection_mut())?;
-
-        let id = Self::checkpoint_request_control(&writer, CheckpointCounter::Next, None)?;
-        writer.commit()?;
+        let id = self
+            .read_checkpoint_request_id(CheckpointCounter::Next)
+            .await?;
         Ok(id.expect("Core extension should return next checkpoint request id"))
+    }
+
+    pub async fn current_checkpoint_request_id(&self) -> Result<Option<i64>, PowerSyncError> {
+        self.read_checkpoint_request_id(CheckpointCounter::Current)
+            .await
     }
 
     pub fn target_checkpoint_request_id(
@@ -133,6 +136,18 @@ impl InnerPowerSyncState {
         update: Option<i64>,
     ) -> Result<Option<i64>, PowerSyncError> {
         Self::checkpoint_request_control(writer, CheckpointCounter::Target, update)
+    }
+
+    async fn read_checkpoint_request_id(
+        &self,
+        counter: CheckpointCounter,
+    ) -> Result<Option<i64>, PowerSyncError> {
+        let mut writer = self.writer().await?;
+        let writer = TransactionGuard::new(writer.sqlite_connection_mut())?;
+
+        let id = Self::checkpoint_request_control(&writer, counter, None)?;
+        writer.commit()?;
+        Ok(id)
     }
 
     fn checkpoint_request_control(
@@ -236,6 +251,7 @@ impl InnerPowerSyncState {
 pub enum CheckpointCounter {
     Target,
     Seed,
+    Current,
     Next,
 }
 
@@ -244,6 +260,7 @@ impl CheckpointCounter {
         match self {
             CheckpointCounter::Target => "target_checkpoint_request_id",
             CheckpointCounter::Seed => "seed_checkpoint_request_id",
+            CheckpointCounter::Current => "current_checkpoint_request_id",
             CheckpointCounter::Next => "next_checkpoint_request_id",
         }
     }
