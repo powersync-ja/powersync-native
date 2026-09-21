@@ -9,7 +9,7 @@ use log::{debug, info, warn};
 use powersync_sqlite_nostd::{Destructor, ResultCode};
 
 use crate::{
-    SyncOptions,
+    BackendConnector, SyncOptions,
     db::connection::{SqliteConnection, TransactionGuard},
     error::RawPowerSyncError,
     sync::{
@@ -59,6 +59,30 @@ pub async fn crud_upload_loop(
         upload.run().await;
         next_trigger.await;
     }
+}
+
+pub async fn post_checkpoint_request(
+    client_id: String,
+    connector: &dyn BackendConnector,
+    channels: &SyncChannels,
+    db: &InnerPowerSyncState,
+) -> Result<i64, PowerSyncError> {
+    channels
+        .checkpoints
+        .wait_for_checkpoint_requests_ready(true)
+        .await
+        .map_err(|e| RawPowerSyncError::Checkpoint { error: e })?;
+
+    let checkpoint_request_id = db.next_checkpoint_request_id().await?;
+    checkpoint_request(
+        db,
+        connector,
+        &CheckpointRequestPayload {
+            client_id,
+            checkpoint_request_id,
+        },
+    )
+    .await
 }
 
 struct CrudUpload<'a> {
@@ -140,20 +164,11 @@ impl<'a> CrudUpload<'a> {
                 write_checkpoint(&self.db, &client_id, credentials).await
             }
             CheckpointMode::Requests(_) => {
-                self.channels
-                    .checkpoints
-                    .wait_for_checkpoint_requests_ready(true)
-                    .await
-                    .map_err(|e| RawPowerSyncError::Checkpoint { error: e })?;
-
-                let checkpoint_request_id = self.db.next_checkpoint_request_id().await?;
-                checkpoint_request(
-                    &self.db,
+                post_checkpoint_request(
+                    client_id,
                     self.options.connector.as_ref(),
-                    &CheckpointRequestPayload {
-                        client_id,
-                        checkpoint_request_id,
-                    },
+                    &self.channels,
+                    &self.db,
                 )
                 .await
             }

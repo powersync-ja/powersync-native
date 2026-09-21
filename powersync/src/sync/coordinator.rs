@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_channel::{Receiver, Sender};
 
 use crate::{
-    SyncOptions,
+    CheckpointError, CheckpointMode, CheckpointRequest, SyncOptions,
     db::internal::InnerPowerSyncState,
     env::PowerSyncTask,
     error::PowerSyncError,
@@ -13,7 +13,7 @@ use crate::{
         download::{DownloadEvent, download_loop},
         state::CheckpointStateSignals,
         streams::ChangedSyncSubscriptions,
-        upload::crud_upload_loop,
+        upload::{crud_upload_loop, get_client_id, post_checkpoint_request},
     },
 };
 
@@ -48,11 +48,12 @@ impl SyncCoordinator {
         let checkpoints = db.env.spawn(repost_unacknowledged_checkpoints(
             db.clone(),
             channels.clone(),
-            options,
+            options.clone(),
         ));
 
         *guard = Some(SyncTasks {
             channels,
+            options,
             uploads: Some(uploads),
             downloads: Some(downloads),
             retried_checkpoints: Some(checkpoints),
@@ -109,10 +110,49 @@ impl SyncCoordinator {
             .send(DownloadEvent::UpdateSubscriptions { keys: update.0 })
             .await;
     }
+
+    pub async fn request_checkpoint(
+        self: Arc<Self>,
+        db: Arc<InnerPowerSyncState>,
+    ) -> Result<CheckpointRequest, CheckpointError> {
+        let guard = self.task.lock().await;
+        let Some(tasks) = &*guard else {
+            return Err(CheckpointError::Disconnected);
+        };
+        if !matches!(tasks.options.checkpoints, CheckpointMode::Requests(_)) {
+            return Err(CheckpointError::Disabled);
+        }
+
+        let channels = tasks.channels.clone();
+        let connector = tasks.options.connector.clone();
+        drop(guard); // Avoid holding the lock across an suspend point
+
+        let client_id = get_client_id(&db)
+            .await
+            .map_err(|e| CheckpointError::CouldNotRequest { cause: e })?;
+        let checkpoint_request_id =
+            post_checkpoint_request(client_id, connector.as_ref(), &channels, &db)
+                .await
+                .map_err(|e| CheckpointError::CouldNotRequest { cause: e })?;
+
+        Ok(CheckpointRequest::new(checkpoint_request_id, self, db))
+    }
+
+    pub async fn check_connected_with_requests_mode(&self) -> Result<(), CheckpointError> {
+        let guard = self.task.lock().await;
+        let Some(tasks) = &*guard else {
+            return Err(CheckpointError::Disconnected.into());
+        };
+        if !matches!(tasks.options.checkpoints, CheckpointMode::Requests(_)) {
+            return Err(CheckpointError::Disabled.into());
+        }
+        Ok(())
+    }
 }
 
 struct SyncTasks {
     channels: SyncChannels,
+    options: SyncOptions,
     downloads: Option<PowerSyncTask>,
     uploads: Option<PowerSyncTask>,
     retried_checkpoints: Option<PowerSyncTask>,

@@ -11,6 +11,7 @@ pub use db::pool::{ConnectionPool, LeasedConnection};
 pub use db::streams::StreamSubscription;
 pub use db::streams::StreamSubscriptionOptions;
 pub use db::streams::SyncStream;
+pub use sync::checkpoint::{CheckpointError, CheckpointRequest};
 pub use sync::connector::{BackendConnector, PowerSyncCredentials};
 pub use sync::options::{CheckpointMode, RequestsCheckpointMode, SyncOptions};
 pub use sync::status::SyncStatusData;
