@@ -18,7 +18,7 @@ pub trait BackendConnector: Send + Sync {
     /// This is optional, and should only return a future for connectors capable of requesting
     /// checkpoints.
     ///
-    /// For upploads that are processed asynchronously by a backend (for example through a message
+    /// For uploads that are processed asynchronously by a backend (for example through a message
     /// queue): The sync client as part of the PowerSync Rust SDK generates a checkpoint request id
     /// and hands it to your backend via this function, which is responsible for creaeting a
     /// matching checkpoint once the uploads preceeding the request have been processed.

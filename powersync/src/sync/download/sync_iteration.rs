@@ -211,7 +211,9 @@ impl<'a> DownloadClient<'a> {
         }
 
         *future = None;
-        // This doesn't generate events, we should just poll the future.
+
+        // This completing successfully is not an event the download client needs to react to. We
+        // just need to poll the future in case it generates an error.
         future::pending().await
     }
 }

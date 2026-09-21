@@ -604,7 +604,7 @@ fn reposts_current_checkpoint_until_applied() {
 
     sync.connect_options(|options| {
         options.with_checkpoint_mode(CheckpointMode::Requests(
-            Duration::from_hours(1).try_into().unwrap(),
+            RequestsCheckpointMode::with_retry_duration(Duration::from_hours(1)).unwrap(),
         ));
     });
 
