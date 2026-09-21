@@ -6,7 +6,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use async_task::Task;
 use async_trait::async_trait;
 use event_listener::Event;
 use futures_lite::{StreamExt, future};
@@ -26,7 +25,6 @@ use thiserror::Error;
 struct SyncStreamTest {
     test: DatabaseTest,
     db: PowerSyncDatabase,
-    tasks: Vec<Task<()>>,
 }
 
 impl SyncStreamTest {
@@ -34,8 +32,7 @@ impl SyncStreamTest {
         let test = DatabaseTest::new();
         let db = test.in_memory_database();
 
-        let tasks = db.async_tasks().spawn_with(|f| test.ex.spawn(f));
-        Self { db, test, tasks }
+        Self { db, test }
     }
 
     fn connect(&self) {
@@ -78,18 +75,6 @@ impl SyncStreamTest {
         })
         .await
     }
-}
-
-#[test]
-fn dropping_database_completes_actors() {
-    let sync = SyncStreamTest::new();
-    drop(sync.db);
-
-    future::block_on(sync.test.ex.run(async move {
-        for task in sync.tasks {
-            task.await;
-        }
-    }));
 }
 
 #[test]

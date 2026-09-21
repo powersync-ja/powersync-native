@@ -6,13 +6,12 @@ use crate::{
     },
     env::PowerSyncEnvironment,
     error::PowerSyncError,
-    sync::{MAX_OP_ID, coordinator::SyncCoordinator, status::SyncStatus, status::SyncStatusData},
+    sync::{MAX_OP_ID, status::SyncStatus, status::SyncStatusData},
     util::SharedFuture,
 };
 use event_listener::EventListener;
 use futures_lite::{FutureExt, Stream, StreamExt, ready};
 use powersync_sqlite_nostd::{ColumnType, Destructor, ResultCode};
-use std::sync::Weak;
 use std::{
     pin::Pin,
     sync::Arc,
@@ -32,25 +31,16 @@ pub struct InnerPowerSyncState {
     pub status: SyncStatus,
     /// A collection of currently-referenced sync stream subscriptions.
     pub(crate) current_streams: SyncStreamTracker,
-    /// Clients have a strong reference to the sync coordinator, but since sync actors have a
-    /// reference to [InnerPowerSyncState], we only keep a weak reference here to ensure we can drop
-    /// actors through the channels owned by [SyncCoordinator].
-    pub(crate) sync: Weak<SyncCoordinator>,
 }
 
 impl InnerPowerSyncState {
-    pub fn new(
-        env: PowerSyncEnvironment,
-        schema: SchemaOrCustom,
-        sync: &Arc<SyncCoordinator>,
-    ) -> Self {
+    pub fn new(env: PowerSyncEnvironment, schema: SchemaOrCustom) -> Self {
         Self {
             env,
             did_initialize: SharedFuture::new(),
             schema: Arc::new(schema),
             status: SyncStatus::new(),
             current_streams: SyncStreamTracker::default(),
-            sync: Arc::downgrade(sync),
         }
     }
 
