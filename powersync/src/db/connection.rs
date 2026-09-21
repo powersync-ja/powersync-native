@@ -75,16 +75,26 @@ impl SqliteConnection {
             &mut stmt,
             null_mut(),
         );
+        let stmt = if stmt.is_null() {
+            None
+        } else {
+            Some(ManagedStmt { stmt })
+        };
 
-        if stmt.is_null() {
-            Err(RawPowerSyncError::RawSqlite {
-                code: ResultCode::from_i32(rc).unwrap_or(ResultCode::ERROR),
+        if let Err(e) = convert_rc(rc) {
+            return Err(RawPowerSyncError::RawSqlite {
+                code: e,
                 context: format!("Could not prepare {sql}"),
             }
-            .into())
-        } else {
-            Ok(ManagedStmt { stmt })
-        }
+            .into());
+        };
+        stmt.ok_or_else(|| {
+            RawPowerSyncError::RawSqlite {
+                code: ResultCode::ERROR,
+                context: format!("Not a statement"),
+            }
+            .into()
+        })
     }
 }
 
@@ -195,7 +205,7 @@ impl RawSqliteConnection {
 
 impl Drop for RawSqliteConnection {
     fn drop(&mut self) {
-        sqlite::close(self.0);
+        convert_rc(sqlite::close(self.0)).expect("Unexpected failure when closing database");
     }
 }
 
