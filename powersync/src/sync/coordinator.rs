@@ -116,37 +116,42 @@ impl SyncCoordinator {
         db: Arc<InnerPowerSyncState>,
     ) -> Result<CheckpointRequest, CheckpointError> {
         let guard = self.task.lock().await;
-        let Some(tasks) = &*guard else {
-            return Err(CheckpointError::Disconnected);
-        };
-        if !matches!(tasks.options.checkpoints, CheckpointMode::Requests(_)) {
-            return Err(CheckpointError::Disabled);
-        }
+        let tasks = Self::extract_connected_with_requests(guard.as_ref())?;
 
         let channels = tasks.channels.clone();
         let connector = tasks.options.connector.clone();
-        drop(guard); // Avoid holding the lock across an suspend point
+        // Avoid holding the lock across a suspension point. It's fine if there's a concurrent
+        // reconnect, post_checkpoint_request will return an error in that case.
+        drop(guard);
 
         let client_id = get_client_id(&db)
             .await
-            .map_err(|e| CheckpointError::CouldNotRequest { cause: e })?;
+            .map_err(CheckpointError::as_request_error)?;
         let checkpoint_request_id =
             post_checkpoint_request(client_id, connector.as_ref(), &channels, &db)
                 .await
-                .map_err(|e| CheckpointError::CouldNotRequest { cause: e })?;
+                .map_err(CheckpointError::as_request_error)?;
 
         Ok(CheckpointRequest::new(checkpoint_request_id, self, db))
     }
 
     pub async fn check_connected_with_requests_mode(&self) -> Result<(), CheckpointError> {
         let guard = self.task.lock().await;
-        let Some(tasks) = &*guard else {
+        Self::extract_connected_with_requests(guard.as_ref())?;
+        Ok(())
+    }
+
+    fn extract_connected_with_requests(
+        tasks: Option<&SyncTasks>,
+    ) -> Result<&SyncTasks, CheckpointError> {
+        let Some(tasks) = tasks else {
             return Err(CheckpointError::Disconnected.into());
         };
         if !matches!(tasks.options.checkpoints, CheckpointMode::Requests(_)) {
             return Err(CheckpointError::Disabled.into());
         }
-        Ok(())
+
+        Ok(tasks)
     }
 }
 

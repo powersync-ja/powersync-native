@@ -60,8 +60,6 @@ impl CheckpointRequest {
                 break Ok(());
             }
 
-            self.sync.check_connected_with_requests_mode().await?;
-
             if let Some(error) = status.any_error() {
                 break Err(CheckpointError::StatusError {
                     cause: error.clone(),
@@ -71,6 +69,8 @@ impl CheckpointRequest {
             if !status.is_connected() && !status.is_connecting() {
                 break Err(CheckpointError::Disconnected);
             }
+
+            self.sync.check_connected_with_requests_mode().await?;
         }
     }
 
@@ -79,7 +79,7 @@ impl CheckpointRequest {
     }
 }
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum CheckpointError {
     #[error(
         "The PowerSync service does not support checkpoint requests. Update to PowerSync service version 1.24.0 or later to use this API."
@@ -93,6 +93,16 @@ pub enum CheckpointError {
     CouldNotRequest { cause: PowerSyncError },
     #[error("Error on sync status before checkpoint was applied: {cause}")]
     StatusError { cause: PowerSyncError },
+}
+
+impl CheckpointError {
+    pub(crate) fn as_request_error(cause: PowerSyncError) -> Self {
+        if let RawPowerSyncError::Checkpoint { error } = cause.inner.as_ref() {
+            return error.clone();
+        }
+
+        return Self::CouldNotRequest { cause };
+    }
 }
 
 pub async fn repost_unacknowledged_checkpoints(

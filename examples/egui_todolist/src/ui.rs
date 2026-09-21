@@ -29,9 +29,17 @@ struct SharedTodoListState {
 enum CheckpointRequestState {
     #[default]
     Idle,
-    InProgress,
+    InProgress(JoinHandle<()>),
     Succeeded(Instant),
     Failed(String),
+}
+
+impl Drop for CheckpointRequestState {
+    fn drop(&mut self) {
+        if let Self::InProgress(task) = self {
+            task.abort();
+        }
+    }
 }
 
 const SUCCESS_DISPLAY_DURATION: Duration = Duration::from_secs(3);
@@ -71,16 +79,17 @@ impl eframe::App for TodoListApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if !self.has_tasks {
             let state = self.shared.clone();
-            let ui = ui.clone();
             self.rt.spawn({
                 let state = self.shared.clone();
+                let ctx = ui.ctx().clone();
+
                 async move {
                     let mut status = state.db.db.watch_status();
                     while let Some(status) = status.next().await {
                         info!("Sync status changed to {:?}", status);
                         let mut guard = state.sync_state.lock().unwrap();
                         *guard = status;
-                        ui.request_repaint();
+                        ctx.request_repaint();
                     }
                 }
             });
@@ -116,29 +125,25 @@ impl eframe::App for TodoListApp {
                 ));
 
                 if sync_status.is_connected() || sync_status.is_connecting() {
+                    let mut checkpoint_request = self.shared.checkpoint_request.lock().unwrap();
+
                     if ui.button("Disconnect").clicked() {
-                        *self.shared.checkpoint_request.lock().unwrap() =
-                            CheckpointRequestState::Idle;
+                        *checkpoint_request = CheckpointRequestState::Idle;
 
                         let state = self.shared.clone();
                         self.rt.spawn(async move { state.db.disconnect().await });
                     }
 
-                    let in_progress = matches!(
-                        &*self.shared.checkpoint_request.lock().unwrap(),
-                        CheckpointRequestState::InProgress
-                    );
+                    let in_progress =
+                        matches!(&*checkpoint_request, CheckpointRequestState::InProgress(_));
 
                     if ui
                         .add_enabled(!in_progress, egui::Button::new("Refresh"))
                         .clicked()
                     {
-                        *self.shared.checkpoint_request.lock().unwrap() =
-                            CheckpointRequestState::InProgress;
-
                         let state = self.shared.clone();
                         let ctx = ui.ctx().clone();
-                        self.rt.spawn(async move {
+                        let task = self.rt.spawn(async move {
                             let result: Result<(), CheckpointError> = async {
                                 let request = state.db.db.request_checkpoint().await?;
                                 request.wait_for_sync().await
@@ -151,21 +156,21 @@ impl eframe::App for TodoListApp {
                             };
                             ctx.request_repaint();
                         });
+
+                        *checkpoint_request = CheckpointRequestState::InProgress(task);
                     }
 
                     // Expire the "Succeeded" state a few seconds after it was set.
+
+                    if let CheckpointRequestState::Succeeded(at) = *checkpoint_request
+                        && at.elapsed() >= SUCCESS_DISPLAY_DURATION
                     {
-                        let mut guard = self.shared.checkpoint_request.lock().unwrap();
-                        if let CheckpointRequestState::Succeeded(at) = *guard
-                            && at.elapsed() >= SUCCESS_DISPLAY_DURATION
-                        {
-                            *guard = CheckpointRequestState::Idle;
-                        }
+                        *checkpoint_request = CheckpointRequestState::Idle;
                     }
 
-                    match &*self.shared.checkpoint_request.lock().unwrap() {
+                    match &*checkpoint_request {
                         CheckpointRequestState::Idle => {}
-                        CheckpointRequestState::InProgress => {
+                        CheckpointRequestState::InProgress(_) => {
                             ui.spinner();
                             ui.label("Requesting checkpoint...");
                         }
