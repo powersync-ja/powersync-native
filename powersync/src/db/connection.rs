@@ -1,11 +1,11 @@
 use crate::error::{PowerSyncError, RawPowerSyncError};
 use num_traits::cast::FromPrimitive;
 use powersync_sqlite_nostd::bindings::sqlite3_open_v2;
-use powersync_sqlite_nostd::{Connection, ManagedConnection, ManagedStmt, ResultCode, sqlite3};
+use powersync_sqlite_nostd::{self as sqlite, ManagedStmt, ResultCode, convert_rc, sqlite3};
 use std::ffi::{CStr, CString, c_int};
 use std::mem::MaybeUninit;
 use std::path::Path;
-use std::ptr::null;
+use std::ptr::{null, null_mut};
 
 /// The SQLite connection used by the PowerSync Rust SDK.
 ///
@@ -32,7 +32,7 @@ impl SqliteConnection {
 
     #[cfg(not(feature = "rusqlite"))]
     pub unsafe fn handle(&self) -> *mut sqlite3 {
-        self.raw.0.db
+        self.raw.0
     }
 
     #[cfg(feature = "rusqlite")]
@@ -47,31 +47,44 @@ impl SqliteConnection {
 
     /// Executes a SQL statement without parameters.
     pub fn exec(&self, stmt: &CStr) -> Result<(), PowerSyncError> {
-        unsafe {
+        let conn = unsafe {
             // Safety: We're not doing anything that could close the connection.
-            self.handle().exec(stmt)
-        }
-        .map_err(|rc| RawPowerSyncError::RawSqlite {
-            code: rc,
-            context: format!("Could not run {}", stmt.to_string_lossy()),
-        })?;
+            self.handle()
+        };
 
+        convert_rc(sqlite::exec(conn, stmt.as_ptr())).map_err(|rc| {
+            RawPowerSyncError::RawSqlite {
+                code: rc,
+                context: format!("Could not run {}", stmt.to_string_lossy()),
+            }
+        })?;
         Ok(())
     }
 
-    pub fn prepare(&self, stmt: &str) -> Result<ManagedStmt, PowerSyncError> {
-        unsafe {
+    pub fn prepare(&self, sql: &str) -> Result<ManagedStmt, PowerSyncError> {
+        let conn = unsafe {
             // Safety: We're not doing anything that could close the connection.
             self.handle()
-        }
-        .prepare_v2(stmt)
-        .map_err(|rc| {
-            RawPowerSyncError::RawSqlite {
-                code: rc,
-                context: format!("Could not prepare {stmt}"),
+        };
+
+        let mut stmt: *mut sqlite::stmt = null_mut();
+        let rc = sqlite::prepare_v2(
+            conn,
+            sql.as_ptr().cast(),
+            sql.len() as i32,
+            &mut stmt,
+            null_mut(),
+        );
+
+        if stmt.is_null() {
+            Err(RawPowerSyncError::RawSqlite {
+                code: ResultCode::from_i32(rc).unwrap_or(ResultCode::ERROR),
+                context: format!("Could not prepare {sql}"),
             }
-            .into()
-        })
+            .into())
+        } else {
+            Ok(ManagedStmt { stmt })
+        }
     }
 }
 
@@ -83,7 +96,7 @@ pub struct TransactionGuard<'a> {
 
 impl<'a> TransactionGuard<'a> {
     pub fn new(connection: &'a mut SqliteConnection) -> Result<Self, PowerSyncError> {
-        if !unsafe { connection.handle().get_autocommit() } {
+        if sqlite::get_autocommit(unsafe { connection.handle() }) == 0 {
             return Err(PowerSyncError::argument_error(
                 "Connection already in transaction",
             ));
@@ -133,10 +146,10 @@ impl From<RawSqliteConnection> for SqliteConnection {
 #[cfg(feature = "rusqlite")]
 impl From<RawSqliteConnection> for SqliteConnection {
     fn from(value: RawSqliteConnection) -> Self {
-        let conn = value.0.db;
+        let conn = value.0;
 
         // Don't call sqlite3_close_v2, we want to transfer ownership.
-        let _ = std::mem::ManuallyDrop::new(value.0);
+        let _ = std::mem::ManuallyDrop::new(value);
 
         Self {
             inner: unsafe {
@@ -149,7 +162,7 @@ impl From<RawSqliteConnection> for SqliteConnection {
     }
 }
 
-pub struct RawSqliteConnection(ManagedConnection);
+pub struct RawSqliteConnection(*mut sqlite::sqlite3);
 
 unsafe impl Send for RawSqliteConnection {}
 
@@ -162,11 +175,9 @@ impl RawSqliteConnection {
         .unwrap();
 
         if rc == ResultCode::OK {
-            Ok(Self(ManagedConnection {
-                db: unsafe {
-                    // sqlite3_open_v2 returned 0, so SQLite will have written the pointer.
-                    db.assume_init()
-                },
+            Ok(Self(unsafe {
+                // sqlite3_open_v2 returned 0, so SQLite will have written the pointer.
+                db.assume_init()
             }))
         } else {
             Err(RawPowerSyncError::RawSqlite {
@@ -179,6 +190,12 @@ impl RawSqliteConnection {
 
     pub fn open_path<P: AsRef<Path>>(path: P, flags: u32) -> Result<Self, PowerSyncError> {
         Self::open(path_to_cstring(path.as_ref())?.as_ref(), flags)
+    }
+}
+
+impl Drop for RawSqliteConnection {
+    fn drop(&mut self) {
+        sqlite::close(self.0);
     }
 }
 
@@ -226,6 +243,7 @@ mod tests {
             RawSqliteConnection::open(c":memory:", SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)
                 .unwrap(),
         );
+        connection.exec(c"SELECT 1").unwrap();
         connection
             .exec(
                 c"PRAGMA foreign_keys = ON;
