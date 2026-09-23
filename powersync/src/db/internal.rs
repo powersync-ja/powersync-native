@@ -126,7 +126,7 @@ impl InnerPowerSyncState {
             panic!("Scalar statement did not return a row")
         };
 
-        Ok(match stmt.column_type(0)? {
+        Ok(match stmt.column_type(0) {
             ColumnType::Integer => Some(stmt.column_int64(0)),
             _ => None,
         })
