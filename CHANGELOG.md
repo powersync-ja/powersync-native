@@ -1,4 +1,4 @@
-## 0.0.8 (unreleased)
+## 0.1.0 (unreleased)
 
 - __Breaking__: `PowerSyncEnvironment::custom` now needs a way to spawn async
   tasks. Replace `tokio_timer()` or `async_io_timer()` timers with
@@ -6,6 +6,7 @@
 - Don't mark sync status as connected when connection fails.
 - Fix sync client blocking writer for longer than necessary.
 - Set cache size and busy timeout on all connections instead of just the writer.
+- Add `PowerSyncDatabase::request_checkpoint`, which can be used to "sync now": The checkpoint completes once all source data created before the checkpoint has synced.
 
 ## 0.0.7
 

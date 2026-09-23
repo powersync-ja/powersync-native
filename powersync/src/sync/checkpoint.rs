@@ -1,19 +1,85 @@
 use std::sync::Arc;
 
+use futures_lite::StreamExt;
 use log::{debug, warn};
 use thiserror::Error;
 
 use crate::{
-    BackendConnector, CheckpointMode, RequestsCheckpointMode, SyncOptions,
+    BackendConnector, CheckpointMode, RequestsCheckpointMode, SyncOptions, SyncStatusData,
     db::internal::InnerPowerSyncState,
     error::{PowerSyncError, RawPowerSyncError},
     sync::{
-        coordinator::SyncChannels, download::http::checkpoint_request,
-        instruction::CheckpointRequestPayload, upload::get_client_id,
+        coordinator::{SyncChannels, SyncCoordinator},
+        download::http::checkpoint_request,
+        instruction::CheckpointRequestPayload,
+        upload::get_client_id,
     },
 };
 
-#[derive(Error, Debug)]
+/// A checkpoint requests created by [crate::PowerSyncDatabase::request_checkpoint].
+///
+/// Use this to wait until the local database has applied server-side changes up to the requested
+/// checkpoint. This is useful for explicit refresh flows where the caller wants confirmation that
+/// the local view has caught up to the service.
+///
+/// Checkpoint requests are backed by request ids tracked in the local database, so they are
+/// reusable across disconnect and reconnect cycles. A [Self::wait_for_sync] interrupted by a
+/// disconnect returns an error, but the same request can be awaited again once a new connection is
+/// established.
+///
+/// Requests do not survive clearing a database, instances created before a clear should be
+/// discarded and requested again.
+#[derive(Clone)]
+pub struct CheckpointRequest {
+    id: i64,
+    sync: Arc<SyncCoordinator>,
+    db: Arc<InnerPowerSyncState>,
+}
+
+impl CheckpointRequest {
+    pub(crate) fn new(id: i64, sync: Arc<SyncCoordinator>, db: Arc<InnerPowerSyncState>) -> Self {
+        Self { id, sync, db }
+    }
+
+    /// Whether this checkpoint request has synced before.
+    pub fn has_synced(&self) -> bool {
+        self.has_synced_in(&self.db.status.current_snapshot())
+    }
+
+    /// Waits until this checkpoint has been synced locally.
+    ///
+    /// This method fails on sync errors: If a download or upload error occurs before this
+    /// checkpoint request has synced, that error is returned here.
+    /// This makes it easier to observe sync errors when relying on checkpoints. Once sync has
+    /// recovered, it is valid to call this method again to await the checkpoint.
+    pub async fn wait_for_sync(&self) -> Result<(), CheckpointError> {
+        let mut stream = self.db.watch_status();
+        loop {
+            let status = stream.next().await.unwrap();
+            if self.has_synced_in(&status) {
+                break Ok(());
+            }
+
+            if let Some(error) = status.any_error() {
+                break Err(CheckpointError::StatusError {
+                    cause: error.clone(),
+                });
+            }
+
+            if !status.is_connected() && !status.is_connecting() {
+                break Err(CheckpointError::Disconnected);
+            }
+
+            self.sync.check_connected_with_requests_mode().await?;
+        }
+    }
+
+    fn has_synced_in(&self, status: &SyncStatusData) -> bool {
+        status.is_checkpoint_request_applied(self.id)
+    }
+}
+
+#[derive(Error, Debug, Clone)]
 pub enum CheckpointError {
     #[error(
         "The PowerSync service does not support checkpoint requests. Update to PowerSync service version 1.24.0 or later to use this API."
@@ -23,8 +89,20 @@ pub enum CheckpointError {
     Disconnected,
     #[error("Connected with legacy checkpoint mode, cannot request checkpoints")]
     Disabled,
+    #[error("Could not request checkpoint: {cause}")]
+    CouldNotRequest { cause: PowerSyncError },
     #[error("Error on sync status before checkpoint was applied: {cause}")]
     StatusError { cause: PowerSyncError },
+}
+
+impl CheckpointError {
+    pub(crate) fn as_request_error(cause: PowerSyncError) -> Self {
+        if let RawPowerSyncError::Checkpoint { error } = cause.inner.as_ref() {
+            return error.clone();
+        }
+
+        return Self::CouldNotRequest { cause };
+    }
 }
 
 pub async fn repost_unacknowledged_checkpoints(

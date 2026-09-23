@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::db::watch::ListenerConfiguration;
 use crate::schema::SchemaOrCustom;
 use crate::sync::coordinator::SyncCoordinator;
+use crate::{CheckpointError, CheckpointRequest};
 use crate::{
     CrudTransaction, SyncOptions,
     db::{
@@ -283,6 +284,19 @@ impl PowerSyncDatabase {
             name,
             parameters.map(|e| e.as_object().expect("Parameters should be a JSON object")),
         )
+    }
+
+    /// Requests a checkpoint from the PowerSync service.
+    ///
+    /// The returned request can be awaited (using [CheckpointRequest::wait_for_sync]) to confirm
+    /// that the local database has applied server-side changes up to the checkpoint. This method
+    /// requires an active or connecting sync client connected with
+    /// [crate::CheckpointMode::Requests] and PowerSync service version 1.24.0 or later.
+    pub async fn request_checkpoint(&self) -> Result<CheckpointRequest, CheckpointError> {
+        self.sync
+            .clone()
+            .request_checkpoint(self.inner.clone())
+            .await
     }
 
     /// Obtains a [LeasedConnection] that can be used to run read-only queries on this database.

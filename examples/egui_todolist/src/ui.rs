@@ -1,9 +1,10 @@
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Ui};
 use futures_lite::StreamExt;
 use log::info;
-use powersync::SyncStatusData;
+use powersync::{CheckpointError, SyncStatusData};
 use rusqlite::params;
 use serde_json::{Map, Value};
 use tokio::{runtime::Runtime, task::JoinHandle};
@@ -21,7 +22,27 @@ struct SharedTodoListState {
     sync_state: Mutex<Arc<SyncStatusData>>,
     lists: Mutex<Vec<TodoList>>,
     selected_list: Mutex<Option<SelectedTodoList>>,
+    checkpoint_request: Mutex<CheckpointRequestState>,
 }
+
+#[derive(Default)]
+enum CheckpointRequestState {
+    #[default]
+    Idle,
+    InProgress(JoinHandle<()>),
+    Succeeded(Instant),
+    Failed(String),
+}
+
+impl Drop for CheckpointRequestState {
+    fn drop(&mut self) {
+        if let Self::InProgress(task) = self {
+            task.abort();
+        }
+    }
+}
+
+const SUCCESS_DISPLAY_DURATION: Duration = Duration::from_secs(3);
 
 struct SelectedTodoList {
     id: String,
@@ -47,6 +68,7 @@ impl TodoListApp {
                 db,
                 lists: Default::default(),
                 selected_list: Default::default(),
+                checkpoint_request: Default::default(),
             }),
             has_tasks: false,
         }
@@ -54,12 +76,13 @@ impl TodoListApp {
 }
 
 impl eframe::App for TodoListApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         if !self.has_tasks {
             let state = self.shared.clone();
-            let ctx = ctx.clone();
             self.rt.spawn({
                 let state = self.shared.clone();
+                let ctx = ui.ctx().clone();
+
                 async move {
                     let mut status = state.db.db.watch_status();
                     while let Some(status) = status.next().await {
@@ -90,7 +113,7 @@ impl eframe::App for TodoListApp {
             guard.clone()
         };
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("PowerSync TodoList demo");
 
             ui.horizontal(|ui| {
@@ -102,9 +125,63 @@ impl eframe::App for TodoListApp {
                 ));
 
                 if sync_status.is_connected() || sync_status.is_connecting() {
+                    let mut checkpoint_request = self.shared.checkpoint_request.lock().unwrap();
+
                     if ui.button("Disconnect").clicked() {
+                        *checkpoint_request = CheckpointRequestState::Idle;
+
                         let state = self.shared.clone();
                         self.rt.spawn(async move { state.db.disconnect().await });
+                    }
+
+                    let in_progress =
+                        matches!(&*checkpoint_request, CheckpointRequestState::InProgress(_));
+
+                    if ui
+                        .add_enabled(!in_progress, egui::Button::new("Refresh"))
+                        .clicked()
+                    {
+                        let state = self.shared.clone();
+                        let ctx = ui.ctx().clone();
+                        let task = self.rt.spawn(async move {
+                            let result: Result<(), CheckpointError> = async {
+                                let request = state.db.db.request_checkpoint().await?;
+                                request.wait_for_sync().await
+                            }
+                            .await;
+
+                            *state.checkpoint_request.lock().unwrap() = match result {
+                                Ok(()) => CheckpointRequestState::Succeeded(Instant::now()),
+                                Err(err) => CheckpointRequestState::Failed(err.to_string()),
+                            };
+                            ctx.request_repaint();
+                        });
+
+                        *checkpoint_request = CheckpointRequestState::InProgress(task);
+                    }
+
+                    // Expire the "Succeeded" state a few seconds after it was set.
+
+                    if let CheckpointRequestState::Succeeded(at) = *checkpoint_request
+                        && at.elapsed() >= SUCCESS_DISPLAY_DURATION
+                    {
+                        *checkpoint_request = CheckpointRequestState::Idle;
+                    }
+
+                    match &*checkpoint_request {
+                        CheckpointRequestState::Idle => {}
+                        CheckpointRequestState::InProgress(_) => {
+                            ui.spinner();
+                            ui.label("Requesting checkpoint...");
+                        }
+                        CheckpointRequestState::Succeeded(at) => {
+                            ui.colored_label(egui::Color32::GREEN, "Up to date");
+                            ui.ctx()
+                                .request_repaint_after(SUCCESS_DISPLAY_DURATION - at.elapsed());
+                        }
+                        CheckpointRequestState::Failed(err) => {
+                            ui.colored_label(egui::Color32::RED, format!("Refresh failed: {err}"));
+                        }
                     }
                 } else if ui.button("Connect").clicked() {
                     let state = self.shared.clone();
@@ -115,7 +192,7 @@ impl eframe::App for TodoListApp {
             ui.separator();
 
             let mut content = TodoAppContent {
-                ctx,
+                ctx: &ui.clone(),
                 app: self,
                 status: sync_status,
                 selected_list: self.shared.selected_list.lock().unwrap(),

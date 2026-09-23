@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use futures_lite::StreamExt;
 use log::warn;
 use powersync::{
-    BackendConnector, ConnectionPool, PowerSyncCredentials, PowerSyncDatabase, SyncOptions,
-    UpdateType,
+    BackendConnector, CheckpointMode, ConnectionPool, PowerSyncCredentials, PowerSyncDatabase,
+    SyncOptions, UpdateType,
     env::PowerSyncEnvironment,
     error::PowerSyncError,
     schema::{Column, Schema, Table},
@@ -98,7 +98,9 @@ impl TodoDatabase {
     }
 
     pub async fn connect(&self) {
-        self.db.connect(SyncOptions::new(self.clone())).await
+        let mut options = SyncOptions::new(self.clone());
+        options.with_checkpoint_mode(CheckpointMode::Requests(Default::default()));
+        self.db.connect(options).await
     }
 
     pub async fn disconnect(&self) {

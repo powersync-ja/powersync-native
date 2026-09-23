@@ -13,7 +13,7 @@ use futures_lite::{
     future::{self, yield_now},
 };
 use powersync::{
-    BackendConnector, CheckpointMode, PowerSyncCredentials, PowerSyncDatabase,
+    BackendConnector, CheckpointError, CheckpointMode, PowerSyncCredentials, PowerSyncDatabase,
     RequestsCheckpointMode, StreamPriority, StreamSubscription, StreamSubscriptionOptions,
     SyncOptions, SyncStatusData, error::PowerSyncError,
 };
@@ -810,5 +810,137 @@ fn reads_sync_lines_before_checkpoint_requests_are_ready() {
             })
             .await;
         sync.wait_for_status(|s| s.is_downloading()).await;
+    });
+}
+
+#[test]
+fn request_checkpoint_fails_when_disconnected() {
+    let sync = SyncStreamTest::new();
+    let checkpoint = sync.run(sync.db.request_checkpoint());
+
+    assert!(matches!(checkpoint, Err(CheckpointError::Disconnected)));
+}
+
+#[test]
+fn request_checkpoint_fails_when_connected_with_legacy_mode() {
+    let sync = SyncStreamTest::new();
+    sync.connect();
+    let checkpoint = sync.run(sync.db.request_checkpoint());
+
+    assert!(matches!(checkpoint, Err(CheckpointError::Disabled)));
+}
+
+#[test]
+fn waits_until_data_is_applied() {
+    let sync = SyncStreamTest::new();
+    sync.connect_with_checkpoints();
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        let requested = sync.db.request_checkpoint().await.unwrap();
+        request
+            .send_checkpoint(Checkpoint {
+                last_op_id: 0,
+                write_checkpoint: Some(2),
+                buckets: vec![],
+                streams: vec![],
+            })
+            .await;
+        assert!(!requested.has_synced());
+
+        request.send_checkpoint_complete(0, None).await;
+        requested.wait_for_sync().await.unwrap();
+        assert!(requested.has_synced());
+    });
+}
+
+#[test]
+fn throws_on_disconnect_but_can_request_again() {
+    let sync = SyncStreamTest::new();
+    sync.connect_with_checkpoints();
+
+    sync.run(async {
+        sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        let requested = sync.db.request_checkpoint().await.unwrap();
+
+        sync.db.disconnect().await;
+        assert!(matches!(
+            requested.wait_for_sync().await,
+            Err(CheckpointError::Disconnected)
+        ));
+
+        sync.connect_with_checkpoints();
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        request
+            .send_checkpoint(Checkpoint {
+                last_op_id: 0,
+                write_checkpoint: Some(2),
+                buckets: vec![],
+                streams: vec![],
+            })
+            .await;
+        request.send_checkpoint_complete(0, None).await;
+
+        requested.wait_for_sync().await.unwrap();
+    });
+}
+
+#[test]
+fn fails_when_reconnecting_with_legacy_mode() {
+    let sync = SyncStreamTest::new();
+    sync.connect_with_checkpoints();
+
+    sync.run(async {
+        sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        let requested = sync.db.request_checkpoint().await.unwrap();
+
+        sync.db.disconnect().await;
+        assert!(matches!(
+            requested.wait_for_sync().await,
+            Err(CheckpointError::Disconnected)
+        ));
+
+        // Reconnecting with the legacy checkpoint mode (the default) should mean that the old
+        // request can no longer be fulfilled.
+        sync.connect();
+        sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        assert!(matches!(
+            requested.wait_for_sync().await,
+            Err(CheckpointError::Disabled)
+        ));
+    });
+}
+
+#[test]
+fn fails_on_sync_errors() {
+    let sync = SyncStreamTest::new();
+    sync.connect_with_checkpoints();
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        let requested = sync.db.request_checkpoint().await.unwrap();
+
+        request
+            .channel
+            .send(SyncLine::Custom(json!("invalid sync line")))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            requested.wait_for_sync().await,
+            Err(CheckpointError::StatusError { .. })
+        ));
     });
 }

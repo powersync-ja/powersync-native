@@ -98,6 +98,13 @@ impl SyncStatusData {
         self.download_error.as_ref()
     }
 
+    pub fn any_error(&self) -> Option<&PowerSyncError> {
+        match self.download_error() {
+            Some(e) => Some(e),
+            None => self.upload_error(),
+        }
+    }
+
     pub fn is_uploading(&self) -> bool {
         matches!(self.uploads, UploadStatus::Uploading)
     }

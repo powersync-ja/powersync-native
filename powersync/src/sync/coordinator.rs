@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_channel::{Receiver, Sender};
 
 use crate::{
-    SyncOptions,
+    CheckpointError, CheckpointMode, CheckpointRequest, SyncOptions,
     db::internal::InnerPowerSyncState,
     env::PowerSyncTask,
     error::PowerSyncError,
@@ -13,7 +13,7 @@ use crate::{
         download::{DownloadEvent, download_loop},
         state::CheckpointStateSignals,
         streams::ChangedSyncSubscriptions,
-        upload::crud_upload_loop,
+        upload::{crud_upload_loop, get_client_id, post_checkpoint_request},
     },
 };
 
@@ -48,11 +48,12 @@ impl SyncCoordinator {
         let checkpoints = db.env.spawn(repost_unacknowledged_checkpoints(
             db.clone(),
             channels.clone(),
-            options,
+            options.clone(),
         ));
 
         *guard = Some(SyncTasks {
             channels,
+            options,
             uploads: Some(uploads),
             downloads: Some(downloads),
             retried_checkpoints: Some(checkpoints),
@@ -109,10 +110,54 @@ impl SyncCoordinator {
             .send(DownloadEvent::UpdateSubscriptions { keys: update.0 })
             .await;
     }
+
+    pub async fn request_checkpoint(
+        self: Arc<Self>,
+        db: Arc<InnerPowerSyncState>,
+    ) -> Result<CheckpointRequest, CheckpointError> {
+        let guard = self.task.lock().await;
+        let tasks = Self::extract_connected_with_requests(guard.as_ref())?;
+
+        let channels = tasks.channels.clone();
+        let connector = tasks.options.connector.clone();
+        // Avoid holding the lock across a suspension point. It's fine if there's a concurrent
+        // reconnect, post_checkpoint_request will return an error in that case.
+        drop(guard);
+
+        let client_id = get_client_id(&db)
+            .await
+            .map_err(CheckpointError::as_request_error)?;
+        let checkpoint_request_id =
+            post_checkpoint_request(client_id, connector.as_ref(), &channels, &db)
+                .await
+                .map_err(CheckpointError::as_request_error)?;
+
+        Ok(CheckpointRequest::new(checkpoint_request_id, self, db))
+    }
+
+    pub async fn check_connected_with_requests_mode(&self) -> Result<(), CheckpointError> {
+        let guard = self.task.lock().await;
+        Self::extract_connected_with_requests(guard.as_ref())?;
+        Ok(())
+    }
+
+    fn extract_connected_with_requests(
+        tasks: Option<&SyncTasks>,
+    ) -> Result<&SyncTasks, CheckpointError> {
+        let Some(tasks) = tasks else {
+            return Err(CheckpointError::Disconnected.into());
+        };
+        if !matches!(tasks.options.checkpoints, CheckpointMode::Requests(_)) {
+            return Err(CheckpointError::Disabled.into());
+        }
+
+        Ok(tasks)
+    }
 }
 
 struct SyncTasks {
     channels: SyncChannels,
+    options: SyncOptions,
     downloads: Option<PowerSyncTask>,
     uploads: Option<PowerSyncTask>,
     retried_checkpoints: Option<PowerSyncTask>,
