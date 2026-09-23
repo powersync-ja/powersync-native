@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use futures_lite::FutureExt;
+use futures_lite::future::Boxed;
 use futures_lite::{StreamExt, future, stream::Boxed as BoxedStream};
 use log::{debug, info, trace, warn};
 use powersync_sqlite_nostd::{Destructor, ManagedStmt, ResultCode};
@@ -7,9 +9,13 @@ use serde::Serialize;
 use serde_json::Map;
 use serde_json::value::RawValue;
 
+use crate::BackendConnector;
 use crate::db::connection::{SqliteConnection, TransactionGuard};
 use crate::schema::SchemaOrCustom;
 use crate::sync::coordinator::SyncChannels;
+use crate::sync::download::http::checkpoint_request;
+use crate::sync::instruction::CheckpointRequestPayload;
+use crate::sync::options::CheckpointMode;
 use crate::{
     SyncOptions,
     db::internal::InnerPowerSyncState,
@@ -26,7 +32,9 @@ pub struct DownloadClient<'a> {
     channels: &'a SyncChannels,
     receive_commands: &'a async_channel::Receiver<DownloadEvent>,
     options: &'a SyncOptions,
+
     stream: Option<BoxedStream<Result<DownloadEvent, PowerSyncError>>>,
+    checkpoint_seed: Option<Boxed<Result<(), PowerSyncError>>>,
 }
 
 impl<'a> DownloadClient<'a> {
@@ -42,6 +50,7 @@ impl<'a> DownloadClient<'a> {
             receive_commands: events,
             options,
             stream: None,
+            checkpoint_seed: None,
         }
     }
 
@@ -51,6 +60,7 @@ impl<'a> DownloadClient<'a> {
             schema: self.db.schema.clone(),
             include_defaults: self.options.include_default_streams,
             active_streams: self.db.current_streams.collect_active_streams(),
+            checkpoint_mode: CoreCheckpointMode::from(&self.options.checkpoints),
         };
         if let Some(end) = self.handle_event(DownloadEvent::Start(start)).await? {
             return Ok(end);
@@ -61,7 +71,10 @@ impl<'a> DownloadClient<'a> {
                 Some(stream) => {
                     future::or(
                         Self::receive_command(&self.receive_commands),
-                        Self::receive_on_stream(stream),
+                        future::or(
+                            Self::receive_on_stream(stream),
+                            Self::wait_for_checkpoint_seed(&mut self.checkpoint_seed),
+                        ),
                     )
                     .await
                 }
@@ -96,8 +109,29 @@ impl<'a> DownloadClient<'a> {
                 Instruction::UpdateSyncStatus { status } => {
                     self.db.status.update(|s| s.update_from_core(status))
                 }
-                Instruction::EstablishSyncStream { request } => {
+                Instruction::EstablishSyncStream {
+                    request,
+                    checkpoint_request,
+                } => {
                     trace!("Establishing sync stream with {request}");
+
+                    if let Some(seed_request) = checkpoint_request {
+                        let state = self.channels.checkpoints.clone();
+                        let connector = self.options.connector.clone();
+                        let db = Arc::clone(&self.db);
+
+                        self.checkpoint_seed = Some(
+                            async move {
+                                let result =
+                                    Self::seed_checkpoint_state(db, connector, seed_request).await;
+
+                                state.mark_checkpoints_ready(result.clone());
+                                result
+                            }
+                            .boxed(),
+                        );
+                    }
+
                     Self::establish_sync_stream(
                         Arc::clone(&self.db),
                         &mut self.stream,
@@ -143,6 +177,17 @@ impl<'a> DownloadClient<'a> {
         Ok(())
     }
 
+    async fn seed_checkpoint_state(
+        db: Arc<InnerPowerSyncState>,
+        connector: Arc<dyn BackendConnector>,
+        request: CheckpointRequestPayload,
+    ) -> Result<(), PowerSyncError> {
+        let response = checkpoint_request(&db, connector.as_ref(), &request).await?;
+        db.seed_checkpoint_request_id(response).await?;
+
+        Ok(())
+    }
+
     async fn receive_command(
         channel: &async_channel::Receiver<DownloadEvent>,
     ) -> Result<DownloadEvent, PowerSyncError> {
@@ -156,6 +201,20 @@ impl<'a> DownloadClient<'a> {
             .try_next()
             .await?
             .unwrap_or(DownloadEvent::ResponseStreamEnd))
+    }
+
+    async fn wait_for_checkpoint_seed<F: Future<Output = Result<(), PowerSyncError>> + Unpin>(
+        future: &mut Option<F>,
+    ) -> Result<DownloadEvent, PowerSyncError> {
+        if let Some(future) = future {
+            future.await?;
+        }
+
+        *future = None;
+
+        // This completing successfully is not an event the download client needs to react to. We
+        // just need to poll the future in case it generates an error.
+        future::pending().await
     }
 }
 
@@ -269,4 +328,21 @@ pub struct StartDownloadIteration {
     pub schema: Arc<SchemaOrCustom>,
     pub include_defaults: bool,
     pub active_streams: Vec<StreamKey>,
+    pub checkpoint_mode: CoreCheckpointMode,
+}
+
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CoreCheckpointMode {
+    Legacy,
+    Requests,
+}
+
+impl From<&CheckpointMode> for CoreCheckpointMode {
+    fn from(value: &CheckpointMode) -> Self {
+        match value {
+            CheckpointMode::Legacy => Self::Legacy,
+            CheckpointMode::Requests(_) => Self::Requests,
+        }
+    }
 }

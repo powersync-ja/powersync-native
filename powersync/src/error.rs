@@ -5,6 +5,8 @@ use std::sync::Arc;
 use std::{borrow::Cow, fmt::Display};
 use thiserror::Error;
 
+use crate::sync::checkpoint::CheckpointError;
+
 pub type Result<T> = std::result::Result<T, PowerSyncError>;
 
 /// A [RawPowerSyncError], but boxed.
@@ -13,7 +15,7 @@ pub type Result<T> = std::result::Result<T, PowerSyncError>;
 /// [RawPowerSyncError] enum type).
 #[derive(Debug, Clone)]
 pub struct PowerSyncError {
-    inner: Arc<RawPowerSyncError>,
+    pub(crate) inner: Arc<RawPowerSyncError>,
 }
 
 impl PowerSyncError {
@@ -48,6 +50,12 @@ impl From<serde_json::Error> for PowerSyncError {
 impl From<reqwest::Error> for PowerSyncError {
     fn from(value: reqwest::Error) -> Self {
         RawPowerSyncError::Reqwest { inner: value }.into()
+    }
+}
+
+impl From<CheckpointError> for PowerSyncError {
+    fn from(value: CheckpointError) -> Self {
+        RawPowerSyncError::Checkpoint { error: value }.into()
     }
 }
 
@@ -122,6 +130,8 @@ pub(crate) enum RawPowerSyncError {
         #[source]
         source: Box<dyn Error + Send + Sync>,
     },
+    #[error("Checkpoint error: {error}")]
+    Checkpoint { error: CheckpointError },
 }
 
 impl From<ResultCode> for PowerSyncError {

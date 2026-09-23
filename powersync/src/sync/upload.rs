@@ -11,6 +11,11 @@ use powersync_sqlite_nostd::{Destructor, ResultCode};
 use crate::{
     SyncOptions,
     db::connection::{SqliteConnection, TransactionGuard},
+    error::RawPowerSyncError,
+    sync::{
+        download::http::checkpoint_request, instruction::CheckpointRequestPayload,
+        options::CheckpointMode,
+    },
 };
 use crate::{
     db::internal::InnerPowerSyncState,
@@ -127,21 +132,32 @@ impl<'a> CrudUpload<'a> {
     }
 
     async fn get_write_checkpoint(&self) -> Result<i64, PowerSyncError> {
-        let client_id = {
-            let reader = self.db.reader().await?;
+        let client_id = get_client_id(&self.db).await?;
 
-            let stmt = reader
-                .sqlite_connection()
-                .prepare("SELECT powersync_client_id()")?;
-            let ResultCode::ROW = stmt.step()? else {
-                panic!("Expected row"); // Can't happen, scalar select
-            };
+        match self.options.checkpoints {
+            CheckpointMode::Legacy => {
+                let credentials = self.options.connector.fetch_credentials().await?;
+                write_checkpoint(&self.db, &client_id, credentials).await
+            }
+            CheckpointMode::Requests(_) => {
+                self.channels
+                    .checkpoints
+                    .wait_for_checkpoint_requests_ready(true)
+                    .await
+                    .map_err(|e| RawPowerSyncError::Checkpoint { error: e })?;
 
-            stmt.column_text(0)?.to_string()
-        };
-
-        let credentials = self.options.connector.fetch_credentials().await?;
-        write_checkpoint(&self.db, &client_id, credentials).await
+                let checkpoint_request_id = self.db.next_checkpoint_request_id().await?;
+                checkpoint_request(
+                    &self.db,
+                    self.options.connector.as_ref(),
+                    &CheckpointRequestPayload {
+                        client_id,
+                        checkpoint_request_id,
+                    },
+                )
+                .await
+            }
+        }
     }
 
     fn read_oldest_crud_item_id(conn: &SqliteConnection) -> Result<Option<i64>, PowerSyncError> {
@@ -228,4 +244,17 @@ impl PendingCheckpointRequest {
         writer.commit()?;
         Ok(())
     }
+}
+
+pub async fn get_client_id(db: &InnerPowerSyncState) -> Result<String, PowerSyncError> {
+    let reader = db.reader().await?;
+
+    let stmt = reader
+        .sqlite_connection()
+        .prepare("SELECT powersync_client_id()")?;
+    let ResultCode::ROW = stmt.step()? else {
+        panic!("Expected row"); // Can't happen, scalar select
+    };
+
+    Ok(stmt.column_text(0)?.to_string())
 }

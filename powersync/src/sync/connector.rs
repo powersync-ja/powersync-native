@@ -1,3 +1,5 @@
+use std::pin::Pin;
+
 use async_trait::async_trait;
 use url::Url;
 
@@ -12,6 +14,26 @@ pub trait BackendConnector: Send + Sync {
 
     /// Inspects completed CRUD transactions on a database and uploads them.
     async fn upload_data(&self) -> Result<(), PowerSyncError>;
+
+    /// This is optional, and should only return a future for connectors capable of requesting
+    /// checkpoints.
+    ///
+    /// For uploads that are processed asynchronously by a backend (for example through a message
+    /// queue): The sync client as part of the PowerSync Rust SDK generates a checkpoint request id
+    /// and hands it to your backend via this function, which is responsible for creaeting a
+    /// matching checkpoint once the uploads preceeding the request have been processed.
+    ///
+    /// For more details, see [asynchronous backend uploads](https://docs.powersync.com/client-sdks/advanced/checkpoint-requests#asynchronous-upload-backends).
+    ///
+    /// To use this connector, using [crate::sync::options::CheckpointMode::Requests] is required.
+    /// Note that this requires PowerSync service version 1.24.0 or later.
+    fn post_checkpoint_request<'a>(
+        &'a self,
+        _client_id: &'a str,
+        _request_id: i64,
+    ) -> Option<Pin<Box<dyn Future<Output = Result<i64, PowerSyncError>> + Send + 'a>>> {
+        None
+    }
 }
 
 /// Credentials used to connect to a PowerSync service instance.
