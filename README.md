@@ -7,8 +7,8 @@ _[PowerSync](https://www.powersync.com) keeps a client-side SQLite database in s
 ## PowerSync Native
 
 > [!NOTE]
-> This SDK is currently in an [alpha state](https://docs.powersync.com/resources/feature-status), intended for external testing and public feedback.
-> Expect breaking changes and instability as development continues.
+> This SDK is currently in a [beta state](https://docs.powersync.com/resources/feature-status): It is production-ready
+> for tested use cases, breaking changes will be clearly communicated.
 
 This repository contains code used to build a PowerSync SDK for native development.
 PowerSync is available as a Rust crate in `powersync/`, and on crates.io as the `powersync` crate.

@@ -1,4 +1,4 @@
-## 0.1.0 (unreleased)
+## 0.1.0
 
 - __Breaking__: `PowerSyncEnvironment::custom` now needs a way to spawn async
   tasks. Replace `tokio_timer()` or `async_io_timer()` timers with
