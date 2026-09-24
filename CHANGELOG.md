@@ -7,7 +7,7 @@
 - Fix sync client blocking writer for longer than necessary.
 - Set cache size and busy timeout on all connections instead of just the writer.
 - Add `PowerSyncDatabase::request_checkpoint`, which can be used to "sync now": The checkpoint completes once all source data created before the checkpoint has synced.
-- Add `PowerSyncDatabase::disconnect_and_clear` remove PowerSync data from a database.
+- Add `PowerSyncDatabase::disconnect_and_clear` to remove PowerSync data from a database.
 
 ## 0.0.7
 

@@ -15,6 +15,7 @@ use crate::{
     sync::{
         checkpoint::repost_unacknowledged_checkpoints,
         download::{DownloadEvent, download_loop},
+        instruction::Instruction,
         state::CheckpointStateSignals,
         streams::ChangedSyncSubscriptions,
         upload::{crud_upload_loop, get_client_id, post_checkpoint_request},
@@ -31,9 +32,8 @@ pub struct SyncCoordinator {
 
 impl SyncCoordinator {
     pub async fn connect(self: Arc<Self>, db: Arc<InnerPowerSyncState>, options: SyncOptions) {
-        self.disconnect(&db).await;
-
         let mut guard = self.task.lock().await;
+        let _ = Self::disconnect_in(&mut guard, &db).await;
 
         let (channels, download_receive, uploads_receive) = SyncChannels::create();
 
@@ -66,9 +66,7 @@ impl SyncCoordinator {
 
     pub async fn disconnect(&self, db: &InnerPowerSyncState) {
         let mut guard = self.task.lock().await;
-        if Self::disconnect_in(&mut guard).await {
-            let _ = Self::fetch_offline_sync_status(db).await;
-        }
+        let _ = Self::disconnect_in(&mut guard, db).await;
     }
 
     pub async fn disconnect_and_clear(
@@ -77,7 +75,7 @@ impl SyncCoordinator {
         flags: DisconnectAndClearFlags,
     ) -> Result<(), PowerSyncError> {
         let mut guard = self.task.lock().await;
-        Self::disconnect_in(&mut guard).await;
+        Self::disconnect_in(&mut guard, db).await?;
 
         {
             let mut writer = db.writer().await?;
@@ -93,13 +91,31 @@ impl SyncCoordinator {
         Ok(())
     }
 
-    async fn disconnect_in<'a>(guard: &mut MutexGuard<'a, Option<SyncTasks>>) -> bool {
+    async fn disconnect_in<'a>(
+        guard: &mut MutexGuard<'a, Option<SyncTasks>>,
+        db: &InnerPowerSyncState,
+    ) -> Result<(), PowerSyncError> {
         if let Some(task) = guard.take() {
             task.cancel().await;
-            true
-        } else {
-            false
+
+            // If we have interrupted an active sync task, manually call stop. This is harmless if
+            // we're already stopped, otherwise it gives us an instruction to update the sync
+            // status to reflect removed connections.
+            let mut writer = db.writer().await?;
+            let instructions =
+                DownloadEvent::Stop.invoke_control(writer.sqlite_connection_mut())?;
+
+            for instruction in instructions {
+                match instruction {
+                    Instruction::UpdateSyncStatus { status } => {
+                        db.status.update(|s| s.update_from_core(status))
+                    }
+                    _ => continue,
+                }
+            }
         }
+
+        Ok(())
     }
 
     /// If we're offline, update the offline sync status and emit it into the database.
