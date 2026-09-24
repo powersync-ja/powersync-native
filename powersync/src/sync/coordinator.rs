@@ -1,11 +1,15 @@
-use async_lock::Mutex as AsyncMutex;
+use async_lock::{Mutex as AsyncMutex, MutexGuard};
 use std::sync::Arc;
 
 use async_channel::{Receiver, Sender};
 
 use crate::{
     CheckpointError, CheckpointMode, CheckpointRequest, SyncOptions,
-    db::internal::InnerPowerSyncState,
+    db::{
+        DisconnectAndClearFlags,
+        connection::{TransactionGuard, exec_stmt},
+        internal::InnerPowerSyncState,
+    },
     env::PowerSyncTask,
     error::PowerSyncError,
     sync::{
@@ -62,10 +66,39 @@ impl SyncCoordinator {
 
     pub async fn disconnect(&self, db: &InnerPowerSyncState) {
         let mut guard = self.task.lock().await;
+        if Self::disconnect_in(&mut guard).await {
+            let _ = Self::fetch_offline_sync_status(db).await;
+        }
+    }
 
+    pub async fn disconnect_and_clear(
+        &self,
+        db: &InnerPowerSyncState,
+        flags: DisconnectAndClearFlags,
+    ) -> Result<(), PowerSyncError> {
+        let mut guard = self.task.lock().await;
+        Self::disconnect_in(&mut guard).await;
+
+        {
+            let mut writer = db.writer().await?;
+            let tx = TransactionGuard::new(writer.sqlite_connection_mut())?;
+            let stmt = tx.inner.prepare("SELECT powersync_clear(?)")?;
+            stmt.bind_int(1, flags.flags())?;
+            exec_stmt(stmt)?;
+            tx.commit()?;
+        }
+
+        let _ = Self::fetch_offline_sync_status(db).await;
+
+        Ok(())
+    }
+
+    async fn disconnect_in<'a>(guard: &mut MutexGuard<'a, Option<SyncTasks>>) -> bool {
         if let Some(task) = guard.take() {
             task.cancel().await;
-            let _ = Self::fetch_offline_sync_status(db).await;
+            true
+        } else {
+            false
         }
     }
 

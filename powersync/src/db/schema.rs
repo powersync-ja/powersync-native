@@ -339,7 +339,8 @@ pub struct RawTable {
     /// [PendingStatementValue::Id].
     pub delete: Option<PendingStatement>,
 
-    /// An optional statement to run when the `powersync_clear` SQL function is called.
+    /// An optional statement to run when [super::PowerSyncDatabase::disconnect_and_clear] is
+    /// called.
     pub clear: Option<SchemaString>,
 }
 

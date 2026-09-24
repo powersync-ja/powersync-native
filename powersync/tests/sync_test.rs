@@ -13,13 +13,15 @@ use futures_lite::{
     future::{self, yield_now},
 };
 use powersync::{
-    BackendConnector, CheckpointError, CheckpointMode, PowerSyncCredentials, PowerSyncDatabase,
-    RequestsCheckpointMode, StreamPriority, StreamSubscription, StreamSubscriptionOptions,
-    SyncOptions, SyncStatusData, error::PowerSyncError,
+    BackendConnector, CheckpointError, CheckpointMode, DisconnectAndClearFlags,
+    PowerSyncCredentials, PowerSyncDatabase, RequestsCheckpointMode, StreamPriority,
+    StreamSubscription, StreamSubscriptionOptions, SyncOptions, SyncStatusData,
+    error::PowerSyncError,
 };
 use powersync_test_utils::{
-    DatabaseTest,
+    DatabaseTest, execute,
     mock_sync_service::TestConnector,
+    query_all,
     sync_line::{Checkpoint, SyncLine},
 };
 use rusqlite::params;
@@ -942,5 +944,106 @@ fn fails_on_sync_errors() {
             requested.wait_for_sync().await,
             Err(CheckpointError::StatusError { .. })
         ));
+    });
+}
+
+#[test]
+fn disconnect_and_clear_clears_db() {
+    let sync = SyncStreamTest::new();
+    sync.connect();
+
+    sync.run(async {
+        // Complete a sync so that there is a status to reset.
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        request
+            .send_checkpoint(Checkpoint::single_bucket("a", 0, None))
+            .await;
+        request.send_checkpoint_complete(0, None).await;
+        sync.wait_for_status(|s| !s.is_downloading()).await;
+
+        let stream = sync.db.sync_stream("a", None);
+        assert!(
+            sync.db
+                .status()
+                .for_stream(&stream)
+                .and_then(|s| s.subscription.last_synced_at())
+                .is_some()
+        );
+
+        execute(
+            &sync.db,
+            "INSERT INTO users (id, name, email) VALUES (uuid(), ?, ?)",
+            params!["Steven", "steven@journeyapps.com"],
+        )
+        .await;
+        assert_eq!(
+            query_all(&sync.db, "SELECT * FROM users", params![])
+                .await
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        sync.db
+            .disconnect_and_clear(DisconnectAndClearFlags::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            query_all(&sync.db, "SELECT * FROM users", params![]).await,
+            json!([])
+        );
+
+        let status = sync.db.status();
+        assert!(!status.is_connected());
+        assert!(
+            status
+                .for_stream(&stream)
+                .and_then(|s| s.subscription.last_synced_at())
+                .is_none()
+        );
+    });
+}
+
+#[test]
+fn disconnect_and_clear_soft() {
+    let sync = SyncStreamTest::new();
+
+    sync.run(async {
+        execute(
+            &sync.db,
+            "INSERT INTO users (id, name, email) VALUES (uuid(), ?, ?)",
+            params!["Testing", "testing@powersync.com"],
+        )
+        .await;
+        execute(
+            &sync.db,
+            "INSERT INTO ps_buckets (name, last_applied_op) VALUES (?, ?)",
+            params!["bkt", 10],
+        )
+        .await;
+
+        // Doing a soft-clear should delete data but keep the bucket around.
+        let mut flags = DisconnectAndClearFlags::default();
+        flags.soft = true;
+        sync.db.disconnect_and_clear(flags).await.unwrap();
+        assert_eq!(
+            query_all(&sync.db, "SELECT * FROM users", params![]).await,
+            json!([])
+        );
+        assert_eq!(
+            query_all(&sync.db, "SELECT name FROM ps_buckets", params![]).await,
+            json!([{"name": "bkt"}])
+        );
+
+        // Doing a default clear also deletes buckets.
+        sync.db
+            .disconnect_and_clear(DisconnectAndClearFlags::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            query_all(&sync.db, "SELECT name FROM ps_buckets", params![]).await,
+            json!([])
+        );
     });
 }
