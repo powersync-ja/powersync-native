@@ -73,6 +73,19 @@ impl PowerSyncDatabase {
         self.sync.disconnect(&self.inner).await
     }
 
+    /// Clears the local database.
+    ///
+    /// This deletes all data tracked by the PowerSync SDK. To configure how data is deleted, use
+    /// [DisconnectAndClearFlags].
+    ///
+    /// If the sync client is currently connected, this disconnects it first.
+    pub async fn disconnect_and_clear(
+        &self,
+        flags: DisconnectAndClearFlags,
+    ) -> Result<(), PowerSyncError> {
+        self.sync.disconnect_and_clear(&self.inner, flags).await
+    }
+
     /// Returns an asynchronous [Stream] emitting an empty event every time one of the specified
     /// tables is written to.
     ///
@@ -348,5 +361,49 @@ impl PowerSyncDatabase {
 impl Debug for PowerSyncDatabase {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PowerSyncDatabase").finish_non_exhaustive()
+    }
+}
+
+/// Flags passed to [PowerSyncDatabase::disconnect_and_clear].
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub struct DisconnectAndClearFlags {
+    /// Whether to clear data in [schema::TableOptions::local_only] tables as well.
+    ///
+    /// This is enabled by default, but can be disabled to preserve local-only data.
+    pub clear_local: bool,
+    /// Whether to perform a soft clear.
+    ///
+    /// By default, this is disabled and the entire copy of data is deleted. In a soft clear, the
+    /// SDK deletes data from public tables but keeps an internal copy around. When later connecting
+    /// again with a token having access to the same synced data, data is already downloaded and the
+    /// sync completes much faster.
+    pub soft: bool,
+}
+
+impl DisconnectAndClearFlags {
+    pub(crate) fn flags(self) -> i32 {
+        let mut flags = 0;
+        if self.clear_local {
+            flags |= Self::FLAG_CLEAR_LOCAL
+        };
+        if self.soft {
+            flags |= Self::FLAG_SOFT
+        };
+
+        flags
+    }
+
+    const FLAG_CLEAR_LOCAL: i32 = 1;
+    const FLAG_SOFT: i32 = 2;
+}
+
+impl Default for DisconnectAndClearFlags {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            clear_local: true,
+            soft: false,
+        }
     }
 }
