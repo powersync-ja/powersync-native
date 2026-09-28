@@ -3317,7 +3317,7 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "powersync"
-version = "0.0.7"
+version = "0.1.0"
 dependencies = [
  "async-broadcast",
  "async-channel",

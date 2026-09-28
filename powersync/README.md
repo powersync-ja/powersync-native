@@ -6,10 +6,9 @@ _[PowerSync](https://www.powersync.com) is a sync engine for building local-firs
 
 # PowerSync Rust
 
-> [!CAUTION]
-> The PowerSync Rust SDK is currently experimental and in a pre-alpha state.
-> We offer no stability guarantees for this SDK, and can't guarantee continued support for it.
-> If you're interested in using this, please [reach out](https://www.powersync.com/contact)!
+> [!NOTE]
+> This SDK is currently in a [beta state](https://docs.powersync.com/resources/feature-status): It is production-ready
+> for tested use cases, breaking changes will be clearly communicated.
 
 ## Setup
 
@@ -21,7 +20,8 @@ requires three external dependencies to be provided:
 2. A `ConnectionPool` of SQLite connections.
    - Create one with `ConnectionPool::open(path)`.
    - For in-memory databases, use `ConnectionPool::single_connection()`.
-3. A timer implementation, used to delay reconnects when a sync connection gets interrupted.
+3. An async runtime like Tokio or smol, used to spawn background tasks for the sync client.
+   Support for these runtimes can be enabled with the `tokio` and `smol` features, respectively.
 
 These three external dependencies are bundled into the `PowerSyncEnvironment` class. At the moment, all three of them
 need to provided manually via `PowerSyncEnvironment::custom`. We may offer a default configuration in the future.
@@ -29,18 +29,6 @@ need to provided manually via `PowerSyncEnvironment::custom`. We may offer a def
 After obtaining a `PowerSyncEnvironment`, construct a `Schema` instance describing the local schema of your database.
 The PowerSync SDK will create and auto-migrate schemas.
 Finally, create a database with `PowerSyncDatabase::new`.
-
-### Async runtimes
-
-This crate provides asynchronous APIs to:
-
-1. Manage concurrent access to SQLite connections.
-2. Request tokens to authenticate against the PowerSync service.
-3. Stream changes from the PowerSync service to your local database.
-4. Upload local writes to your backend.
-
-For maximum flexibility, the `powersync` crate is executor-agnostic and can run on any async runtime,
-with builtin support for Tokio and smol-rs available through optional features.
 
 ### Running queries
 
@@ -88,10 +76,3 @@ The native SDK is built under the assumption that data to sync is specified in [
 
 To subscribe to a stream, use `PowerSyncDatabase::sync_stream(db, name, params).subscribe()`. The stream will be synced
 as long as the returned subscription handle is active (and for a configured TTL afterwards).
-
-## Limitations
-
-This SDK is in development. Some items that are still being worked on are:
-
-1. Token prefetching and caching.
-2. Unit tests for CRUD uploads.

@@ -332,16 +332,7 @@ fn raw_table_clear() {
         );
 
         // Running powersync_clear should delete from users
-        {
-            let mut writer = db.writer().await.unwrap();
-            let writer = writer.transaction().unwrap();
-
-            let mut stmt = writer.prepare("SELECT powersync_clear(0)").unwrap();
-            stmt.query_one(params![], |_| Ok(())).unwrap();
-            drop(stmt);
-            writer.commit().unwrap();
-        }
-
+        db.disconnect_and_clear(Default::default()).await.unwrap();
         assert_eq!(
             query_all(&db, "SELECT * FROM users", params![]).await,
             json!([]),
