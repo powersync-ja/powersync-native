@@ -13,14 +13,13 @@ use futures_lite::{
     future::{self, yield_now},
 };
 use powersync::{
-    BackendConnector, CheckpointError, CheckpointMode, DisconnectAndClearFlags,
-    PowerSyncCredentials, PowerSyncDatabase, RequestsCheckpointMode, StreamPriority,
-    StreamSubscription, StreamSubscriptionOptions, SyncOptions, SyncStatusData,
-    error::PowerSyncError,
+    Authenticator, CheckpointError, CheckpointMode, DisconnectAndClearFlags, MutationUploader,
+    PowerSyncDatabase, RequestsCheckpointMode, StreamPriority, StreamSubscription,
+    StreamSubscriptionOptions, SyncOptions, SyncStatusData, error::PowerSyncError,
 };
 use powersync_test_utils::{
     DatabaseTest, execute,
-    mock_sync_service::TestConnector,
+    mock_sync_service::{TestConnector, WriteCheckpointResponse},
     query_all,
     sync_line::{Checkpoint, SyncLine},
 };
@@ -53,7 +52,8 @@ impl SyncStreamTest {
     }
 
     fn connect_options(&self, configure: impl FnOnce(&mut SyncOptions)) {
-        let mut options = SyncOptions::new(TestConnector::default());
+        let connector = TestConnector::default();
+        let mut options = SyncOptions::new(Self::TEST_ENDPOINT, connector.clone(), connector);
         configure(&mut options);
 
         self.run(self.db.connect(options))
@@ -88,6 +88,8 @@ impl SyncStreamTest {
         })
         .await
     }
+
+    const TEST_ENDPOINT: &str = "https://rust-unit-test.powersync.com";
 }
 
 #[test]
@@ -357,15 +359,8 @@ fn upload_retry() {
     struct FirstUploadFailure;
 
     #[async_trait]
-    impl BackendConnector for FailOnFirstUpload {
-        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-            Ok(PowerSyncCredentials {
-                endpoint: "https://rust.unit.test.powersync.com/".to_string(),
-                token: "token".to_string(),
-            })
-        }
-
-        async fn upload_data(&self) -> Result<(), PowerSyncError> {
+    impl MutationUploader for FailOnFirstUpload {
+        async fn upload(&self) -> Result<(), PowerSyncError> {
             let Some(tx) = self.db.next_crud_transaction().await? else {
                 return Ok(());
             };
@@ -384,11 +379,15 @@ fn upload_retry() {
     let sync = SyncStreamTest::new();
     let upload_counter = Arc::new(AtomicUsize::default());
     let event = Arc::new(Event::new());
-    let mut options = SyncOptions::new(FailOnFirstUpload {
-        db: sync.db.clone(),
-        counter: upload_counter.clone(),
-        completed_second: event.clone(),
-    });
+    let mut options = SyncOptions::new(
+        SyncStreamTest::TEST_ENDPOINT,
+        TestConnector::default(),
+        FailOnFirstUpload {
+            db: sync.db.clone(),
+            counter: upload_counter.clone(),
+            completed_second: event.clone(),
+        },
+    );
     options.with_retry_delay(Duration::ZERO); // We can't use timers in tests
     sync.run(sync.db.connect(options));
 
@@ -431,28 +430,24 @@ fn fetching_credentials_does_not_hold_the_download_writer_lease() {
     }
 
     #[async_trait]
-    impl BackendConnector for WriterUsingConnector {
-        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
+    impl Authenticator for WriterUsingConnector {
+        async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
             self.entered.send(()).await.unwrap();
             self.release.recv().await.unwrap();
-            Ok(PowerSyncCredentials {
-                endpoint: "https://rust.unit.test.powersync.com/".to_string(),
-                token: "token".to_string(),
-            })
-        }
-
-        async fn upload_data(&self) -> Result<(), PowerSyncError> {
-            Ok(())
+            Ok(Arc::new("token".to_string()))
         }
     }
 
     let sync = SyncStreamTest::new();
     let (entered_tx, entered_rx) = async_channel::bounded(1);
     let (release_tx, release_rx) = async_channel::bounded(1);
-    sync.run(sync.db.connect(SyncOptions::new(WriterUsingConnector {
-        entered: entered_tx,
-        release: release_rx,
-    })));
+    sync.run(sync.db.connect(SyncOptions::download_only(
+        SyncStreamTest::TEST_ENDPOINT,
+        WriterUsingConnector {
+            entered: entered_tx,
+            release: release_rx,
+        },
+    )));
 
     sync.run(async {
         entered_rx.recv().await.unwrap();
@@ -530,20 +525,13 @@ fn reconnects_on_failure() {
 
 #[test]
 fn requests_checkpoints_for_updates() {
-    struct TestConnector {
+    struct TestUploader {
         db: PowerSyncDatabase,
     }
 
     #[async_trait]
-    impl BackendConnector for TestConnector {
-        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-            Ok(PowerSyncCredentials {
-                endpoint: "https://rust.unit.test.powersync.com/".to_string(),
-                token: "token".to_string(),
-            })
-        }
-
-        async fn upload_data(&self) -> Result<(), PowerSyncError> {
+    impl MutationUploader for TestUploader {
+        async fn upload(&self) -> Result<(), PowerSyncError> {
             let Some(tx) = self.db.next_crud_transaction().await? else {
                 return Ok(());
             };
@@ -554,9 +542,13 @@ fn requests_checkpoints_for_updates() {
     }
 
     let sync = SyncStreamTest::new();
-    let mut options = SyncOptions::new(TestConnector {
-        db: sync.db.clone(),
-    });
+    let mut options = SyncOptions::new(
+        SyncStreamTest::TEST_ENDPOINT,
+        TestConnector::default(),
+        TestUploader {
+            db: sync.db.clone(),
+        },
+    );
     options.with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
     options.with_retry_delay(Duration::ZERO);
     sync.run(sync.db.connect(options));
@@ -657,15 +649,8 @@ fn download_is_retried_on_checkpoint_request() {
     }
 
     #[async_trait]
-    impl BackendConnector for Connector {
-        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-            Ok(PowerSyncCredentials {
-                endpoint: "https://rust.unit.test.powersync.com/".to_string(),
-                token: "token".to_string(),
-            })
-        }
-
-        async fn upload_data(&self) -> Result<(), PowerSyncError> {
+    impl MutationUploader for Connector {
+        async fn upload(&self) -> Result<(), PowerSyncError> {
             let tx = self.db.next_crud_transaction().await?;
             if let Some(tx) = tx {
                 tx.complete().await?;
@@ -676,9 +661,13 @@ fn download_is_retried_on_checkpoint_request() {
     }
 
     let sync = SyncStreamTest::new();
-    let mut options = SyncOptions::new(Connector {
-        db: sync.db.clone(),
-    });
+    let mut options = SyncOptions::new(
+        SyncStreamTest::TEST_ENDPOINT,
+        TestConnector::default(),
+        Connector {
+            db: sync.db.clone(),
+        },
+    );
     options.with_retry_delay(Duration::from_hours(1));
     options.with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
 
@@ -712,19 +701,23 @@ fn download_is_retried_on_checkpoint_request() {
 }
 
 #[test]
-fn can_use_checkpoint_method_from_connector() {
+fn can_use_checkpoint_method_from_authenticator() {
     let sync = SyncStreamTest::new();
     let did_request_checkpoint = Event::new();
     let listener = did_request_checkpoint.listen();
 
-    let mut options = SyncOptions::new(TestConnector {
-        post_checkpoint_request: Box::new(move |request_id| {
-            assert_eq!(request_id, 1);
+    let mut options = SyncOptions::download_only(
+        SyncStreamTest::TEST_ENDPOINT,
+        TestConnector {
+            post_checkpoint_request: Arc::new(move |request_id| {
+                assert_eq!(request_id, 1);
 
-            did_request_checkpoint.notify(1);
-            return Some(async move { Ok(request_id) }.boxed());
-        }),
-    });
+                did_request_checkpoint.notify(1);
+                return Some(async move { Ok(request_id) }.boxed());
+            }),
+            token: Arc::new("token".to_string()),
+        },
+    );
     options.with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
     options.with_retry_delay(Duration::ZERO);
     sync.run(sync.db.connect(options));
@@ -1045,5 +1038,125 @@ fn disconnect_and_clear_soft() {
             query_all(&sync.db, "SELECT name FROM ps_buckets", params![]).await,
             json!([])
         );
+    });
+}
+
+/// Creates a [MutationUploader] that completes the next CRUD transaction and then notifies
+/// `did_upload`.
+fn completing_uploader(
+    db: &PowerSyncDatabase,
+    did_upload: &Arc<Event>,
+) -> impl MutationUploader + 'static {
+    let db = db.clone();
+    let did_upload = did_upload.clone();
+
+    move || {
+        let db = db.clone();
+        let did_upload = did_upload.clone();
+
+        async move {
+            if let Some(tx) = db.next_crud_transaction().await? {
+                tx.complete().await?;
+                did_upload.notify(usize::MAX);
+            }
+
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn connect_download_only() {
+    let sync = SyncStreamTest::new();
+    let did_upload = Arc::new(Event::new());
+    let upload_listener = did_upload.listen();
+
+    sync.run(async {
+        sync.db
+            .connect(SyncOptions::download_only(
+                SyncStreamTest::TEST_ENDPOINT,
+                TestConnector::default(),
+            ))
+            .await;
+        let _request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        // Create a local mutation, which is never uploaded.
+        execute(
+            &sync.db,
+            "INSERT INTO users (id, name) VALUES (uuid(), ?)",
+            params!["local mutation"],
+        )
+        .await;
+        sync.test.advance_time(Duration::from_hours(1));
+        assert_eq!(
+            query_all(&sync.db, "SELECT * FROM ps_crud", params![])
+                .await
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Upgrade to a full connection, which should upload.
+        sync.db
+            .connect(SyncOptions::new(
+                SyncStreamTest::TEST_ENDPOINT,
+                TestConnector::default(),
+                completing_uploader(&sync.db, &did_upload),
+            ))
+            .await;
+        upload_listener.await;
+    });
+}
+
+#[test]
+fn connect_upload_only() {
+    let sync = SyncStreamTest::new();
+    let did_upload = Arc::new(Event::new());
+    let upload_listener = did_upload.listen();
+
+    let write_checkpoint_requests = Arc::new(AtomicUsize::new(0));
+    *sync.test.http.write_checkpoints.lock().unwrap() = Box::new({
+        let requests = write_checkpoint_requests.clone();
+        move || {
+            requests.fetch_add(1, Ordering::SeqCst);
+            WriteCheckpointResponse::new("1".to_string())
+        }
+    });
+
+    sync.run(async {
+        sync.db
+            .connect(SyncOptions::upload_only(completing_uploader(
+                &sync.db,
+                &did_upload,
+            )))
+            .await;
+
+        execute(
+            &sync.db,
+            "INSERT INTO users (id, name) VALUES (uuid(), ?)",
+            params!["local mutation"],
+        )
+        .await;
+        upload_listener.await;
+
+        // Connecting in upload-only mode should make no SDK-initiated HTTP requests.
+        sync.test.advance_time(Duration::from_hours(1));
+        assert!(sync.test.http.receive_requests.is_empty());
+        assert_eq!(write_checkpoint_requests.load(Ordering::SeqCst), 0);
+
+        // Reconnect in download-only mode. This should request a write checkpoint because the
+        // upload-only mode can't.
+        sync.db
+            .connect(SyncOptions::download_only(
+                SyncStreamTest::TEST_ENDPOINT,
+                TestConnector::default(),
+            ))
+            .await;
+        let _request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+        sync.test.advance_time(Duration::from_secs(1));
+        assert_eq!(write_checkpoint_requests.load(Ordering::SeqCst), 1);
     });
 }

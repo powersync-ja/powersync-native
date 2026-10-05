@@ -9,13 +9,12 @@ use serde::Serialize;
 use serde_json::Map;
 use serde_json::value::RawValue;
 
-use crate::BackendConnector;
 use crate::db::connection::{SqliteConnection, TransactionGuard};
 use crate::schema::SchemaOrCustom;
 use crate::sync::coordinator::SyncChannels;
 use crate::sync::download::http::checkpoint_request;
 use crate::sync::instruction::CheckpointRequestPayload;
-use crate::sync::options::CheckpointMode;
+use crate::sync::options::{CheckpointMode, EndpointAndAuthenticator};
 use crate::{
     SyncOptions,
     db::internal::InnerPowerSyncState,
@@ -32,6 +31,7 @@ pub struct DownloadClient<'a> {
     channels: &'a SyncChannels,
     receive_commands: &'a async_channel::Receiver<DownloadEvent>,
     options: &'a SyncOptions,
+    endpoint: &'a Arc<EndpointAndAuthenticator>,
 
     stream: Option<BoxedStream<Result<DownloadEvent, PowerSyncError>>>,
     checkpoint_seed: Option<Boxed<Result<(), PowerSyncError>>>,
@@ -43,12 +43,14 @@ impl<'a> DownloadClient<'a> {
         channels: &'a SyncChannels,
         events: &'a async_channel::Receiver<DownloadEvent>,
         options: &'a SyncOptions,
+        endpoint: &'a Arc<EndpointAndAuthenticator>,
     ) -> Self {
         Self {
             db,
             channels,
             receive_commands: events,
             options,
+            endpoint,
             stream: None,
             checkpoint_seed: None,
         }
@@ -117,7 +119,7 @@ impl<'a> DownloadClient<'a> {
 
                     if let Some(seed_request) = checkpoint_request {
                         let state = self.channels.checkpoints.clone();
-                        let connector = self.options.connector.clone();
+                        let connector = self.endpoint.clone();
                         let db = Arc::clone(&self.db);
 
                         self.checkpoint_seed = Some(
@@ -136,7 +138,7 @@ impl<'a> DownloadClient<'a> {
                         Arc::clone(&self.db),
                         &mut self.stream,
                         request,
-                        self.options,
+                        self.endpoint.clone(),
                     )
                     .await?;
 
@@ -168,21 +170,20 @@ impl<'a> DownloadClient<'a> {
         db: Arc<InnerPowerSyncState>,
         stream: &mut Option<BoxedStream<Result<DownloadEvent, PowerSyncError>>>,
         request: Box<RawValue>,
-        options: &SyncOptions,
+        endpoint: Arc<EndpointAndAuthenticator>,
     ) -> Result<(), PowerSyncError> {
-        let credentials = options.connector.fetch_credentials().await?;
         let request = request.get().to_string();
 
-        *stream = Some(sync_stream(db, credentials, request).boxed());
+        *stream = Some(sync_stream(db, endpoint, request).boxed());
         Ok(())
     }
 
     async fn seed_checkpoint_state(
         db: Arc<InnerPowerSyncState>,
-        connector: Arc<dyn BackendConnector>,
+        connector: Arc<EndpointAndAuthenticator>,
         request: CheckpointRequestPayload,
     ) -> Result<(), PowerSyncError> {
-        let response = checkpoint_request(&db, connector.as_ref(), &request).await?;
+        let response = checkpoint_request(&db, &connector, &request).await?;
         db.seed_checkpoint_request_id(response).await?;
 
         Ok(())

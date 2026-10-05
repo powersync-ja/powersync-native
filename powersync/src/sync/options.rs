@@ -2,13 +2,19 @@ use std::{sync::Arc, time::Duration};
 
 use futures_lite::future::yield_now;
 
-use crate::{env::PowerSyncEnvironment, error::PowerSyncError, sync::connector::BackendConnector};
+use crate::{
+    MutationUploader,
+    env::PowerSyncEnvironment,
+    error::PowerSyncError,
+    sync::connector::{Authenticator, PowerSyncCredentials},
+};
 
 /// Options controlling how PowerSync connects to a sync service.
 #[derive(Clone)]
 pub struct SyncOptions {
-    /// The connector to fetch credentials from.
-    pub(crate) connector: Arc<dyn BackendConnector>,
+    /// The authenticator to fetch credentials from, if downloading is enabled.
+    pub(crate) endpoint: Option<Arc<EndpointAndAuthenticator>>,
+    pub(crate) uploader: Option<Arc<dyn MutationUploader>>,
     /// Whether to sync `auto_subscribe: true` streams automatically.
     pub(crate) include_default_streams: bool,
     /// The retry delay between sync iterations on errors.
@@ -19,13 +25,47 @@ pub struct SyncOptions {
 }
 
 impl SyncOptions {
-    /// Creates new [SyncOptions] with default options given the [BackendConnector].
-    pub fn new(connector: impl BackendConnector + 'static) -> Self {
+    fn empty() -> Self {
         Self {
-            connector: Arc::new(connector),
+            endpoint: None,
+            uploader: None,
             include_default_streams: true,
             retry_delay: Duration::from_secs(5),
             checkpoints: CheckpointMode::default(),
+        }
+    }
+
+    /// Creates new [SyncOptions] with default options given the [Authenticator] and
+    /// [MutationUploader].
+    pub fn new(
+        endpoint: &str,
+        authenticator: impl Authenticator + 'static,
+        uploader: impl MutationUploader + 'static,
+    ) -> Self {
+        let mut downloads = Self::download_only(endpoint, authenticator);
+        downloads.uploader = Some(Arc::new(uploader));
+        downloads
+    }
+
+    /// Creates new [SyncOptions] for downloading only.
+    pub fn download_only(endpoint: &str, authenticator: impl Authenticator + 'static) -> Self {
+        Self {
+            endpoint: Some(Arc::new(EndpointAndAuthenticator {
+                endpoint: endpoint.to_owned(),
+                authenticator: Box::new(authenticator),
+            })),
+            ..Self::empty()
+        }
+    }
+
+    /// Creates new sync options for uploading only.
+    ///
+    /// When connecting with these options, the sync client won't attempt to connect to a PowerSync
+    /// service.
+    pub fn upload_only(uploader: impl MutationUploader + 'static) -> Self {
+        Self {
+            uploader: Some(Arc::new(uploader)),
+            ..Self::empty()
         }
     }
 
@@ -67,6 +107,23 @@ impl SyncOptions {
     /// [CheckpointMode::Legacy] is used by default for compatibility with older services.
     pub fn with_checkpoint_mode(&mut self, mode: CheckpointMode) {
         self.checkpoints = mode;
+    }
+}
+
+pub(crate) struct EndpointAndAuthenticator {
+    pub endpoint: String,
+    pub authenticator: Box<dyn Authenticator>,
+}
+
+impl EndpointAndAuthenticator {
+    pub async fn fetch_credentials<'a>(
+        &'a self,
+    ) -> Result<PowerSyncCredentials<'a>, PowerSyncError> {
+        let jwt = self.authenticator.resolve_credentials().await?;
+        Ok(PowerSyncCredentials {
+            endpoint: &self.endpoint,
+            token: jwt,
+        })
     }
 }
 

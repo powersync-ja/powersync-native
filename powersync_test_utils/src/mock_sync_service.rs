@@ -5,7 +5,8 @@ use futures_lite::future::Boxed;
 use futures_lite::{FutureExt, Stream, StreamExt, ready, stream};
 use pin_project_lite::pin_project;
 use powersync::http::{HttpClient, Request, Response, ResponseBody};
-use powersync::{BackendConnector, PowerSyncCredentials, StreamPriority, error::PowerSyncError};
+use powersync::{Authenticator, MutationUploader};
+use powersync::{StreamPriority, error::PowerSyncError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_with::{DisplayFromStr, serde_as};
@@ -290,33 +291,29 @@ pub struct WriteCheckpointResponseData {
     pub write_checkpoint: String,
 }
 
+#[derive(Clone)]
 pub struct TestConnector {
-    pub post_checkpoint_request: Box<
+    pub post_checkpoint_request: Arc<
         dyn Fn(i64) -> Option<Pin<Box<dyn Future<Output = Result<i64, PowerSyncError>> + Send>>>
             + Send
             + Sync,
     >,
+    pub token: Arc<String>,
 }
 
 impl Default for TestConnector {
     fn default() -> Self {
         Self {
-            post_checkpoint_request: Box::new(|_| None),
+            post_checkpoint_request: Arc::new(|_| None),
+            token: Arc::new("token".to_string()),
         }
     }
 }
 
 #[async_trait]
-impl BackendConnector for TestConnector {
-    async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-        Ok(PowerSyncCredentials {
-            endpoint: "https://rust.unit.test.powersync.com/".to_string(),
-            token: "token".to_string(),
-        })
-    }
-
-    async fn upload_data(&self) -> Result<(), PowerSyncError> {
-        Ok(())
+impl Authenticator for TestConnector {
+    async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
+        Ok(self.token.clone())
     }
 
     fn post_checkpoint_request<'a>(
@@ -325,5 +322,12 @@ impl BackendConnector for TestConnector {
         request_id: i64,
     ) -> Option<Pin<Box<dyn Future<Output = Result<i64, PowerSyncError>> + Send + 'a>>> {
         (self.post_checkpoint_request)(request_id)
+    }
+}
+
+#[async_trait]
+impl MutationUploader for TestConnector {
+    async fn upload(&self) -> Result<(), PowerSyncError> {
+        Ok(())
     }
 }
