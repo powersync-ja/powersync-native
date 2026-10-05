@@ -146,9 +146,8 @@ impl<'a> DownloadClient<'a> {
                     self.channels.trigger_crud_upload();
                 }
                 Instruction::FetchCredentials { .. } => {
-                    // TODO: Pre-fetching credentials
-                    // If did_expire is true, the core extension will also emit a stop
-                    // instruction. So we don't have to handle that separately.
+                    // Credentials either have expired or are about to expire, invalidate.
+                    self.endpoint.authenticator.invalidate_credentials();
                 }
                 Instruction::CloseSyncStream(close) => {
                     return Ok(Some(close));

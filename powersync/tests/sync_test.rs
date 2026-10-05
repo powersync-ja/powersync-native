@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, SystemTime},
@@ -458,6 +458,57 @@ fn fetching_credentials_does_not_hold_the_download_writer_lease() {
         );
         drop(writer);
         release_tx.send(()).await.unwrap();
+    });
+}
+
+#[test]
+fn invalidates_cached_credentials_on_token_expiry() {
+    #[derive(Default)]
+    struct CachingState {
+        cached: Mutex<Option<Arc<String>>>,
+        fetches: AtomicUsize,
+        invalidations: AtomicUsize,
+    }
+
+    struct CachingAuthenticator(Arc<CachingState>);
+
+    #[async_trait]
+    impl Authenticator for CachingAuthenticator {
+        async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
+            let mut cached = self.0.cached.lock().unwrap();
+            let token = cached.get_or_insert_with(|| {
+                let id = self.0.fetches.fetch_add(1, Ordering::SeqCst);
+                Arc::new(format!("token-{id}"))
+            });
+
+            Ok(token.clone())
+        }
+
+        fn invalidate_credentials(&self) {
+            self.0.invalidations.fetch_add(1, Ordering::SeqCst);
+            *self.0.cached.lock().unwrap() = None;
+        }
+    }
+
+    let sync = SyncStreamTest::new();
+    let authenticator = Arc::new(CachingState::default());
+    let options = SyncOptions::download_only(
+        SyncStreamTest::TEST_ENDPOINT,
+        CachingAuthenticator(authenticator.clone()),
+    );
+    sync.run(sync.db.connect(options));
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        assert_eq!(authenticator.fetches.load(Ordering::SeqCst), 1);
+        assert_eq!(authenticator.invalidations.load(Ordering::SeqCst), 0);
+
+        // A token about to expire makes the core extension request new credentials.
+        request.send_keepalive(5).await;
+
+        while authenticator.invalidations.load(Ordering::SeqCst) == 0 {
+            yield_now().await;
+        }
     });
 }
 
