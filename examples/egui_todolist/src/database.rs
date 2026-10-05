@@ -1,8 +1,10 @@
+use std::sync::{Arc, Mutex};
+
 use async_trait::async_trait;
 use futures_lite::StreamExt;
 use log::warn;
 use powersync::{
-    BackendConnector, CheckpointMode, ConnectionPool, PowerSyncCredentials, PowerSyncDatabase,
+    Authenticator, CheckpointMode, ConnectionPool, MutationUploader, PowerSyncDatabase,
     SyncOptions, UpdateType,
     env::PowerSyncEnvironment,
     error::PowerSyncError,
@@ -79,6 +81,7 @@ impl TodoList {
 #[derive(Clone)]
 pub struct TodoDatabase {
     pub db: PowerSyncDatabase,
+    cached_credentials: Arc<Mutex<Option<Arc<String>>>>,
 }
 
 impl TodoDatabase {
@@ -94,11 +97,14 @@ impl TodoDatabase {
         schema.tables.push(TodoEntry::schema());
 
         let db = PowerSyncDatabase::new(env, schema);
-        Self { db }
+        Self {
+            db,
+            cached_credentials: Arc::default(),
+        }
     }
 
     pub async fn connect(&self) {
-        let mut options = SyncOptions::new(self.clone());
+        let mut options = SyncOptions::new("http://localhost:8080", self.clone(), self.clone());
         options.with_checkpoint_mode(CheckpointMode::Requests(Default::default()));
         self.db.connect(options).await
     }
@@ -107,29 +113,46 @@ impl TodoDatabase {
         self.db.disconnect().await;
     }
 
-    async fn fetch_credentials_self_hosted(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
+    async fn fetch_credentials_self_hosted(&self) -> Result<Arc<String>, PowerSyncError> {
         let response = reqwest::get("http://localhost:6060/api/auth/token").await?;
 
         #[derive(Deserialize)]
         struct TokenResponse {
-            token: String,
+            token: Arc<String>,
         }
 
         let token: TokenResponse = response.json().await?;
-        Ok(PowerSyncCredentials {
-            endpoint: "http://localhost:8080".to_string(),
-            token: token.token,
-        })
+        Ok(token.token)
     }
 }
 
 #[async_trait]
-impl BackendConnector for TodoDatabase {
-    async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-        self.fetch_credentials_self_hosted().await
+impl Authenticator for TodoDatabase {
+    async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
+        {
+            let guard = self.cached_credentials.lock().unwrap();
+            if let Some(ref cached) = *guard {
+                // Fast path, we have cached credentials. Concurrent fetch_credentials_self_hosted
+                // are okay too.
+                return Ok(cached.clone());
+            }
+        }
+
+        let credentials = self.fetch_credentials_self_hosted().await?;
+        let mut guard = self.cached_credentials.lock().unwrap();
+        *guard = Some(credentials.clone());
+        Ok(credentials)
     }
 
-    async fn upload_data(&self) -> Result<(), PowerSyncError> {
+    fn invalidate_credentials(&self) {
+        let mut guard = self.cached_credentials.lock().unwrap();
+        *guard = None;
+    }
+}
+
+#[async_trait]
+impl MutationUploader for TodoDatabase {
+    async fn upload(&self) -> Result<(), PowerSyncError> {
         let mut transactions = self.db.crud_transactions();
         let mut last_tx = None;
 

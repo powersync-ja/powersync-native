@@ -1,3 +1,9 @@
+## 0.2.0 (unreleased)
+
+- __Breaking__: Split `BackendConnector` trait into `Authenticator` and `MutationUploader`.
+  - `Authenticator` is allowed to cache tokens now, and is informed when a token has expired.
+  - Add `SyncOptions::download_only` and `SyncOptions::upload_only` for unidirectional sync.
+
 ## 0.1.0
 
 - __Breaking__: `PowerSyncEnvironment::custom` now needs a way to spawn async

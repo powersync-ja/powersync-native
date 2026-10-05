@@ -166,9 +166,12 @@ impl SyncCoordinator {
     ) -> Result<CheckpointRequest, CheckpointError> {
         let guard = self.task.lock().await;
         let tasks = Self::extract_connected_with_requests(guard.as_ref())?;
+        let Some(ref authenticator) = tasks.options.endpoint else {
+            return Err(CheckpointError::Disconnected);
+        };
 
+        let authenticator = authenticator.clone();
         let channels = tasks.channels.clone();
-        let connector = tasks.options.connector.clone();
         // Avoid holding the lock across a suspension point. It's fine if there's a concurrent
         // reconnect, post_checkpoint_request will return an error in that case.
         drop(guard);
@@ -177,7 +180,7 @@ impl SyncCoordinator {
             .await
             .map_err(CheckpointError::as_request_error)?;
         let checkpoint_request_id =
-            post_checkpoint_request(client_id, connector.as_ref(), &channels, &db)
+            post_checkpoint_request(client_id, &authenticator, &channels, &db)
                 .await
                 .map_err(CheckpointError::as_request_error)?;
 

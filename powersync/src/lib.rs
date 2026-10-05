@@ -12,7 +12,7 @@ pub use db::streams::StreamSubscriptionOptions;
 pub use db::streams::SyncStream;
 pub use db::{DisconnectAndClearFlags, PowerSyncDatabase};
 pub use sync::checkpoint::{CheckpointError, CheckpointRequest};
-pub use sync::connector::{BackendConnector, PowerSyncCredentials};
+pub use sync::connector::{Authenticator, MutationUploader};
 pub use sync::options::{CheckpointMode, RequestsCheckpointMode, SyncOptions};
 pub use sync::status::SyncStatusData;
 pub use sync::stream_priority::StreamPriority;
