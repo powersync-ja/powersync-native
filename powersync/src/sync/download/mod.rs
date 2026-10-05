@@ -19,8 +19,12 @@ pub async fn download_loop(
         channels.checkpoints.disconnected();
     };
 
+    let Some(ref endpoint) = options.endpoint else {
+        return;
+    };
+
     loop {
-        let download = DownloadClient::new(db.clone(), &channels, &events, &options);
+        let download = DownloadClient::new(db.clone(), &channels, &events, &options, endpoint);
         let delay_retry = match download.run().await {
             Ok(end) => !end.hide_disconnect,
             Err(e) => {

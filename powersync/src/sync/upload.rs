@@ -9,12 +9,13 @@ use log::{debug, info, warn};
 use powersync_sqlite_nostd::{Destructor, ResultCode};
 
 use crate::{
-    BackendConnector, SyncOptions,
+    MutationUploader, SyncOptions,
     db::connection::{SqliteConnection, TransactionGuard},
     error::RawPowerSyncError,
     sync::{
-        download::http::checkpoint_request, instruction::CheckpointRequestPayload,
-        options::CheckpointMode,
+        download::http::checkpoint_request,
+        instruction::CheckpointRequestPayload,
+        options::{CheckpointMode, EndpointAndAuthenticator},
     },
 };
 use crate::{
@@ -30,6 +31,24 @@ pub async fn crud_upload_loop(
     channels: SyncChannels,
     trigger_uploads: Receiver<()>,
 ) {
+    let common: CommonCrudUpload<'_> = CommonCrudUpload {
+        options: &options,
+        channels: &channels,
+        db: db.as_ref(),
+    };
+
+    let uploader = match (&options.endpoint, &options.uploader) {
+        (_, Some(uploader)) => uploader,
+        (Some(endpoint), None) => {
+            // We can't upload data, but we're connected for downloads. We might have been connected
+            // for uploads before, and thus need to request a checkpoint before syncing completed
+            // uploads.
+            common.request_target_checkpoint_once(endpoint).await;
+            return;
+        }
+        _ => return,
+    };
+
     let mut tables = HashSet::new();
     tables.insert("ps_crud".to_string());
 
@@ -52,9 +71,8 @@ pub async fn crud_upload_loop(
         );
 
         let mut upload = CrudUpload {
-            options: &options,
-            db: &db,
-            channels: &channels,
+            common,
+            uploader: uploader.as_ref(),
         };
         upload.run().await;
         next_trigger.await;
@@ -63,7 +81,7 @@ pub async fn crud_upload_loop(
 
 pub async fn post_checkpoint_request(
     client_id: String,
-    connector: &dyn BackendConnector,
+    authenticator: &EndpointAndAuthenticator,
     channels: &SyncChannels,
     db: &InnerPowerSyncState,
 ) -> Result<i64, PowerSyncError> {
@@ -76,7 +94,7 @@ pub async fn post_checkpoint_request(
     let checkpoint_request_id = db.next_checkpoint_request_id().await?;
     checkpoint_request(
         db,
-        connector,
+        authenticator,
         &CheckpointRequestPayload {
             client_id,
             checkpoint_request_id,
@@ -85,17 +103,23 @@ pub async fn post_checkpoint_request(
     .await
 }
 
-struct CrudUpload<'a> {
+#[derive(Clone, Copy)]
+struct CommonCrudUpload<'a> {
     options: &'a SyncOptions,
     channels: &'a SyncChannels,
     db: &'a InnerPowerSyncState,
+}
+
+struct CrudUpload<'a> {
+    common: CommonCrudUpload<'a>,
+    uploader: &'a dyn MutationUploader,
 }
 
 impl<'a> CrudUpload<'a> {
     pub async fn run(&mut self) {
         let mut last_item_id = None::<i64>;
         scopeguard::defer! {
-            self.db.status.update(|s| s.set_upload_state(UploadStatus::Idle));
+            self.common.db.status.update(|s| s.set_upload_state(UploadStatus::Idle));
         }
 
         // Invoke upload method on connector until there are no remaining CRUD items to upload.
@@ -107,10 +131,10 @@ impl<'a> CrudUpload<'a> {
                     last_item_id = None;
                     info!("CRUD uploads failed, will retry, {e}");
 
-                    self.db
-                        .status
+                    let db = self.common.db;
+                    db.status
                         .update(|data| data.set_upload_state(UploadStatus::Error(e)));
-                    self.options.retry_delay(&self.db.env).await;
+                    self.common.options.retry_delay(&db.env).await;
                 }
             }
         }
@@ -122,19 +146,15 @@ impl<'a> CrudUpload<'a> {
     ) -> Result<ControlFlow<()>, PowerSyncError> {
         let Some(item) = self.oldest_crud_item_id().await? else {
             // Uploading is completed, advance write checkpoint.
-            if let Some(advance_target) = self.sequence_for_checkpoint().await? {
-                let write_checkpoint = self.get_write_checkpoint().await?;
-                advance_target.complete(write_checkpoint, &self.db).await?;
+            if let Some(ref endpoint) = self.common.options.endpoint {
+                self.common.request_checkpoint_if_needed(endpoint).await?;
             }
-
-            // It's possible that pending CRUD uploads were preventing data from  syncing. So now
-            // that that's completed, notify the download client in case it needs to retry.
-            self.channels.mark_crud_uploads_completed().await;
 
             return Ok(ControlFlow::Break(()));
         };
 
-        self.db
+        self.common
+            .db
             .status
             .update(|data| data.set_upload_state(UploadStatus::Uploading));
         if matches!(*last_item_id, Some(x) if x == item) {
@@ -145,34 +165,14 @@ impl<'a> CrudUpload<'a> {
         }
 
         *last_item_id = Some(item);
-        self.options.connector.upload_data().await?;
+        self.uploader.upload().await?;
 
         Ok(ControlFlow::Continue(()))
     }
 
     async fn oldest_crud_item_id(&self) -> Result<Option<i64>, PowerSyncError> {
-        let reader = self.db.reader().await?;
+        let reader = self.common.db.reader().await?;
         Self::read_oldest_crud_item_id(reader.sqlite_connection())
-    }
-
-    async fn get_write_checkpoint(&self) -> Result<i64, PowerSyncError> {
-        let client_id = get_client_id(&self.db).await?;
-
-        match self.options.checkpoints {
-            CheckpointMode::Legacy => {
-                let credentials = self.options.connector.fetch_credentials().await?;
-                write_checkpoint(&self.db, &client_id, credentials).await
-            }
-            CheckpointMode::Requests(_) => {
-                post_checkpoint_request(
-                    client_id,
-                    self.options.connector.as_ref(),
-                    &self.channels,
-                    &self.db,
-                )
-                .await
-            }
-        }
     }
 
     fn read_oldest_crud_item_id(conn: &SqliteConnection) -> Result<Option<i64>, PowerSyncError> {
@@ -182,6 +182,45 @@ impl<'a> CrudUpload<'a> {
             ResultCode::ROW => Some(stmt.column_int64(0)),
             _ => None,
         })
+    }
+
+    const DUPLICATE_ITEM_WARNING: &'static str = "
+Potentially previously uploaded CRUD entries are still present in the upload queue.
+Make sure to handle uploads and complete CRUD transactions or batches by calling and awaiting their
+`complete()` method.
+The next upload iteration will be delayed.";
+}
+
+impl<'a> CommonCrudUpload<'a> {
+    async fn request_checkpoint_if_needed(
+        &self,
+        endpoint: &EndpointAndAuthenticator,
+    ) -> Result<(), PowerSyncError> {
+        let did_request_checkpoint =
+            if let Some(advance_target) = self.sequence_for_checkpoint().await? {
+                let write_checkpoint = self.get_write_checkpoint(endpoint).await?;
+                advance_target.complete(write_checkpoint, &self.db).await?;
+            };
+
+        // It's possible that pending CRUD uploads were preventing data from  syncing. So now
+        // that that's completed, notify the download client in case it needs to retry.
+        self.channels.mark_crud_uploads_completed().await;
+
+        Ok(did_request_checkpoint)
+    }
+
+    async fn get_write_checkpoint(
+        &self,
+        endpoint: &EndpointAndAuthenticator,
+    ) -> Result<i64, PowerSyncError> {
+        let client_id = get_client_id(&self.db).await?;
+
+        match self.options.checkpoints {
+            CheckpointMode::Legacy => write_checkpoint(&self.db, &client_id, endpoint).await,
+            CheckpointMode::Requests(_) => {
+                post_checkpoint_request(client_id, endpoint, &self.channels, &self.db).await
+            }
+        }
     }
 
     fn ps_crud_sequence(tx: &TransactionGuard) -> Result<Option<i64>, PowerSyncError> {
@@ -216,11 +255,25 @@ impl<'a> CrudUpload<'a> {
         }))
     }
 
-    const DUPLICATE_ITEM_WARNING: &'static str = "
-Potentially previously uploaded CRUD entries are still present in the upload queue.
-Make sure to handle uploads and complete CRUD transactions or batches by calling and awaiting their
-`complete()` method.
-The next upload iteration will be delayed.";
+    /// Tries requesting a checkpoint until that is successful.
+    async fn request_target_checkpoint_once(&self, endpoint: &EndpointAndAuthenticator) {
+        scopeguard::defer! {
+            self.db.status.update(|s| s.set_upload_state(UploadStatus::Idle));
+        }
+
+        loop {
+            match self.request_checkpoint_if_needed(endpoint).await {
+                Ok(()) => break,
+                Err(e) => {
+                    self.db
+                        .status
+                        .update(|s| s.set_upload_state(UploadStatus::Error(e)));
+
+                    self.options.retry_delay(&self.db.env).await;
+                }
+            }
+        }
+    }
 }
 
 struct PendingCheckpointRequest {
@@ -243,8 +296,8 @@ impl PendingCheckpointRequest {
             return Ok(());
         }
 
-        let seq_after =
-            CrudUpload::ps_crud_sequence(&writer)?.expect("sqlite sequence should not be empty");
+        let seq_after = CommonCrudUpload::ps_crud_sequence(&writer)?
+            .expect("sqlite sequence should not be empty");
 
         if seq_after != self.crud_sequence {
             debug!(

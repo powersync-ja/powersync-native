@@ -1,15 +1,16 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use crate::BackendConnector;
+use crate::Authenticator;
 use crate::http::{Request, Response};
 use crate::sync::checkpoint::CheckpointError;
 use crate::sync::instruction::CheckpointRequestPayload;
+use crate::sync::options::EndpointAndAuthenticator;
 use crate::util::LineSplitter;
 use crate::{
     db::internal::InnerPowerSyncState,
     error::{PowerSyncError, RawPowerSyncError},
-    sync::{connector::PowerSyncCredentials, download::sync_iteration::DownloadEvent},
+    sync::download::sync_iteration::DownloadEvent,
     util::BsonObjects,
 };
 use futures_lite::{Stream, StreamExt, stream};
@@ -20,10 +21,12 @@ use serde_with::{DisplayFromStr, serde_as};
 /// connection to the PowerSync service.
 pub fn sync_stream(
     db: Arc<InnerPowerSyncState>,
-    auth: PowerSyncCredentials,
+    authenticator: Arc<EndpointAndAuthenticator>,
     request_body: String,
 ) -> impl Stream<Item = Result<DownloadEvent, PowerSyncError>> {
     let response = async move {
+        let auth = authenticator.fetch_credentials().await?;
+
         let request = Request {
             method: "POST",
             url: auth.parsed_endpoint("sync/stream")?,
@@ -42,7 +45,7 @@ pub fn sync_stream(
         };
 
         let response = db.env.client.send(request).await?;
-        check_ok(response.status)?;
+        check_ok(response.status, authenticator.authenticator.as_ref())?;
 
         Ok::<Response, PowerSyncError>(response)
     };
@@ -61,8 +64,9 @@ pub fn sync_stream(
 pub async fn write_checkpoint(
     db: &InnerPowerSyncState,
     client_id: &str,
-    auth: PowerSyncCredentials,
+    authenticator: &EndpointAndAuthenticator,
 ) -> Result<i64, PowerSyncError> {
+    let auth = authenticator.fetch_credentials().await?;
     let mut url = auth.parsed_endpoint("write-checkpoint2.json")?;
     url.set_query(Some(&format!("client_id={}", client_id)));
 
@@ -81,7 +85,7 @@ pub async fn write_checkpoint(
     };
 
     let response = db.env.client.send(request).await?;
-    check_ok(response.status)?;
+    check_ok(response.status, authenticator.authenticator.as_ref())?;
 
     #[derive(Deserialize)]
     struct WriteCheckpointResponse {
@@ -104,16 +108,17 @@ pub async fn write_checkpoint(
 /// Posts a checkpoint request to the PowerSync sync service.
 pub async fn checkpoint_request(
     db: &InnerPowerSyncState,
-    connector: &dyn BackendConnector,
+    authenticator: &EndpointAndAuthenticator,
     body: &CheckpointRequestPayload,
 ) -> Result<i64, PowerSyncError> {
-    if let Some(future) =
-        connector.post_checkpoint_request(&body.client_id, body.checkpoint_request_id)
+    if let Some(future) = authenticator
+        .authenticator
+        .post_checkpoint_request(&body.client_id, body.checkpoint_request_id)
     {
         return future.await;
     }
 
-    let auth = connector.fetch_credentials().await?;
+    let auth = authenticator.fetch_credentials().await?;
     let url = auth.parsed_endpoint("sync/checkpoint-request")?;
 
     let body = serde_json::to_vec(body)?;
@@ -139,7 +144,7 @@ pub async fn checkpoint_request(
         .into());
     }
 
-    check_ok(response.status)?;
+    check_ok(response.status, authenticator.authenticator.as_ref())?;
 
     #[derive(Deserialize)]
     struct CheckpointRequestResponse {
@@ -159,10 +164,13 @@ pub async fn checkpoint_request(
     Ok(response.data.checkpoint_request_id)
 }
 
-fn check_ok(code: u16) -> Result<(), PowerSyncError> {
+fn check_ok(code: u16, authenticator: &dyn Authenticator) -> Result<(), PowerSyncError> {
     match code {
         200 => Ok(()),
-        401 => Err(RawPowerSyncError::InvalidCredentials.into()),
+        401 => {
+            authenticator.invalidate_credentials();
+            Err(RawPowerSyncError::InvalidCredentials.into())
+        }
         _ => Err(RawPowerSyncError::UnexpectedStatusCode { code }.into()),
     }
 }
@@ -257,11 +265,22 @@ mod tests {
             environment,
             Schema::default().into(),
         ));
-        let credentials = PowerSyncCredentials {
-            endpoint: "https://rust.unit.test.powersync.com/".to_string(),
-            token: "token".to_string(),
-        };
-        let mut events = Box::pin(sync_stream(db, credentials, "{}".to_string()));
+        let endpoint = "https://rust.unit.test.powersync.com/";
+
+        struct StaticAuthenticator;
+
+        #[async_trait]
+        impl Authenticator for StaticAuthenticator {
+            async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
+                Ok(Arc::new("token".to_string()))
+            }
+        }
+
+        let authenticator = Arc::new(EndpointAndAuthenticator {
+            endpoint: endpoint.to_string(),
+            authenticator: Box::new(StaticAuthenticator),
+        });
+        let mut events = Box::pin(sync_stream(db, authenticator, "{}".to_string()));
 
         future::block_on(events.as_mut().try_next())
     }

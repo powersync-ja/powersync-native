@@ -61,7 +61,15 @@ stream transformer.
 ### Connecting
 
 To automatically keep the local SQLite database in-sync with a backend process, call `PowerSyncDatabase::connect`.
-This requires passing your own `BackendConnector` implementation, see the examples for a possible implementation.
+This requires passing `SyncOptions`, which can be created for:
+
+- downloading only (via `SyncOptions::download_only`), which requires the endpoint of your PowerSync instance and an
+  `powersync::Authenticator` implementation returning JWT tokens for the client to use.
+- uploading only (via `SyncOptions::upload_only`), which requires a `powersync::MutationUploader` responsible for
+  uploading local mutations to your backend. In this mode, no connection to a PowerSync service is made.
+- bidirectional sync (recommended, via `SyncOptions::new`). This requires both an authenticator and a mutation uploader.
+
+Also see the examples for a possible implementation.
 
 ### Sync status
 
