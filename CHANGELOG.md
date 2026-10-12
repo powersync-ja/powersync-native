@@ -1,3 +1,7 @@
+## 0.1.1
+
+- Add `PriorityStatus`, exposing sync status grouped by priority groups of Sync Streams.
+
 ## 0.1.0
 
 - __Breaking__: `PowerSyncEnvironment::custom` now needs a way to spawn async
