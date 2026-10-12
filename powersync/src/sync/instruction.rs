@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::value::RawValue;
 use serde_with::{DisplayFromStr, serde_as};
 
-use crate::{sync::progress::ProgressCounters, util::SerializedJsonObject};
+use crate::{
+    sync::{progress::ProgressCounters, status::PriorityStatus},
+    util::SerializedJsonObject,
+};
 
 /// An instruction sent by the core extension to the SDK.
 #[derive(Deserialize, Debug)]
@@ -69,6 +72,7 @@ pub struct DownloadSyncStatus {
     /// Whether we've requested the client SDK to connect to the socket while not receiving sync
     /// lines yet.
     pub connecting: bool,
+    pub priority_status: Vec<PriorityStatus>,
     pub streams: Vec<ActiveStreamSubscription>,
     pub downloading: Option<IgnoredAny>,
 

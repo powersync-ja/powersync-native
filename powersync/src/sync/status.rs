@@ -4,12 +4,14 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::SystemTime,
 };
 
 use event_listener::{Event, EventListener};
 use powersync_sqlite_nostd::ResultCode;
+use serde::Deserialize;
 
-use crate::db::connection::SqliteConnection;
+use crate::{StreamPriority, db::connection::SqliteConnection, sync::instruction::Timestamp};
 use crate::{
     error::PowerSyncError,
     sync::{
@@ -140,6 +142,35 @@ impl SyncStatusData {
         &self.downloading.streams
     }
 
+    /// Information about when streams in priorities have last synced.
+    pub fn priority_status(&self) -> &[PriorityStatus] {
+        &self.downloading.priority_status
+    }
+
+    pub fn priority_status_for(&self, priority: StreamPriority) -> Option<&PriorityStatus> {
+        // Lower-priority values always override higher-priority status entries. The internal
+        // priority is already sorted in ascending priority order.
+        for entry in self.priority_status() {
+            if entry.priority <= priority {
+                return Some(entry);
+            }
+        }
+
+        None
+    }
+
+    /// Whether all tracked Sync Streams have ever synced.
+    pub fn has_synced(&self) -> bool {
+        self.priority_status_for(StreamPriority::SENTINEL)
+            .is_some_and(|status| status.has_synced())
+    }
+
+    /// The last timestamp at which all tracked Sync Streams have synced.
+    pub fn last_synced_at(&self) -> Option<SystemTime> {
+        self.priority_status_for(StreamPriority::SENTINEL)?
+            .last_synced_at()
+    }
+
     /// All sync streams currently being tracked in the database.
     pub fn streams<'a>(&'a self) -> impl Iterator<Item = SyncStreamStatus<'a>> + 'a {
         self.downloading
@@ -228,4 +259,28 @@ impl Debug for SyncStatusData {
 pub struct SyncStreamStatus<'a> {
     pub progress: Option<ProgressCounters>,
     pub subscription: StreamSubscriptionDescription<'a>,
+}
+
+/// Information about partial sync.
+///
+/// When different Sync Streams have different priorities assigned to them, clients may be in a
+/// state where only some of them have synced. This information is exposed on
+/// [ActiveStreamSubscription] for affected streams, [DownloadSyncStatus::priority_status] reports
+/// it aggregated by priority.
+#[derive(Deserialize, Debug)]
+pub struct PriorityStatus {
+    /// The priority for which information is reported.
+    pub priority: StreamPriority,
+    /// The last timestamp at which streams with this priority have synced.
+    last_synced_at: Option<Timestamp>,
+}
+
+impl PriorityStatus {
+    pub fn last_synced_at(&self) -> Option<SystemTime> {
+        Some(self.last_synced_at?.into())
+    }
+
+    pub fn has_synced(&self) -> bool {
+        self.last_synced_at.is_some()
+    }
 }

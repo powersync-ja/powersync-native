@@ -97,15 +97,21 @@ impl<'a> BucketChecksum<'a> {
             is_default: true,
             errors: Default::default(),
         };
-        let cs = BucketChecksum {
+        let mut cs = Self::without_stream(name, count, prio);
+        cs.subscriptions
+            .push(BucketSubscriptionReason::DerivedFromDefaultStream(0));
+
+        (stream, cs)
+    }
+
+    pub fn without_stream(name: &'a str, count: i64, prio: Option<StreamPriority>) -> Self {
+        Self {
             bucket: name,
             checksum: 0,
             priority: prio,
             count: Some(count),
-            subscriptions: vec![BucketSubscriptionReason::DerivedFromDefaultStream(0)],
-        };
-
-        (stream, cs)
+            subscriptions: vec![],
+        }
     }
 }
 

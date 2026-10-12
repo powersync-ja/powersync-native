@@ -22,7 +22,7 @@ use powersync_test_utils::{
     DatabaseTest, execute,
     mock_sync_service::TestConnector,
     query_all,
-    sync_line::{Checkpoint, SyncLine},
+    sync_line::{BucketChecksum, Checkpoint, SyncLine},
 };
 use rusqlite::params;
 use serde_json::json;
@@ -340,7 +340,48 @@ fn progress_without_priorities() {
         sync.wait_for_progress("a", 2, 2).await;
 
         request.send_checkpoint_complete(oplog_id, None).await;
-        sync.wait_for_status(|s| !s.is_downloading()).await;
+        sync.wait_for_status(|s| s.has_synced()).await;
+        sync.db.status().last_synced_at().unwrap();
+    });
+}
+
+#[test]
+fn per_priority_status() {
+    let sync = SyncStreamTest::new();
+    sync.connect();
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        // Send checkpoint with 10 ops, progress should be 0/10.
+
+        request
+            .send_checkpoint(Checkpoint {
+                last_op_id: 0,
+                write_checkpoint: None,
+                buckets: vec![
+                    BucketChecksum::without_stream("p0", 0, Some(0.try_into().unwrap())),
+                    BucketChecksum::without_stream("p1", 0, Some(1.try_into().unwrap())),
+                    BucketChecksum::without_stream("p2", 0, Some(2.try_into().unwrap())),
+                    BucketChecksum::without_stream("p3", 0, Some(3.try_into().unwrap())),
+                ],
+                streams: vec![],
+            })
+            .await;
+        sync.wait_for_status(|s| s.is_downloading()).await;
+
+        for priority in 0..=3 {
+            let priority = StreamPriority::try_from(priority).unwrap();
+
+            assert!(!sync.db.status().priority_status_for(priority).is_some());
+            request.send_checkpoint_complete(0, Some(priority)).await;
+            sync.wait_for_status(|s| s.priority_status_for(priority).is_some())
+                .await;
+        }
+
+        request.send_checkpoint_complete(0, None).await;
+        sync.wait_for_status(|s| s.has_synced()).await;
     });
 }
 
