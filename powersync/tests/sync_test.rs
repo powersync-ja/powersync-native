@@ -354,8 +354,6 @@ fn per_priority_status() {
         let request = sync.test.http.receive_requests.recv().await.unwrap();
         sync.wait_for_status(|s| s.is_connected()).await;
 
-        // Send checkpoint with 10 ops, progress should be 0/10.
-
         request
             .send_checkpoint(Checkpoint {
                 last_op_id: 0,

@@ -1,6 +1,6 @@
 ## 0.1.1
 
-- Add `has_synced` and `last_synced_at` grouped priority groups of Sync Streams.
+- Add `PriorityStatus`, exposing sync status grouped by priority groups of Sync Streams.
 
 ## 0.1.0
 

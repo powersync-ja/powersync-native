@@ -14,7 +14,7 @@ pub use db::{DisconnectAndClearFlags, PowerSyncDatabase};
 pub use sync::checkpoint::{CheckpointError, CheckpointRequest};
 pub use sync::connector::{BackendConnector, PowerSyncCredentials};
 pub use sync::options::{CheckpointMode, RequestsCheckpointMode, SyncOptions};
-pub use sync::status::SyncStatusData;
+pub use sync::status::{PriorityStatus, SyncStatusData};
 pub use sync::stream_priority::StreamPriority;
 pub mod error;
 pub mod http;
