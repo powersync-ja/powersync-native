@@ -37,6 +37,7 @@ pub enum Instruction {
     // object or a literal value
     /// Close the websocket / HTTP stream to the sync service.
     CloseSyncStream(CloseSyncStream),
+    CheckpointDelayedDueToLocalData {},
     /// Flush the file-system if it's non-durable (only applicable to the Dart SDK).
     FlushFileSystem {},
     /// Notify that a sync has been completed, prompting client SDKs to clear earlier errors.

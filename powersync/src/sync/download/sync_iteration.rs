@@ -148,6 +148,9 @@ impl<'a> DownloadClient<'a> {
                     // If did_expire is true, the core extension will also emit a stop
                     // instruction. So we don't have to handle that separately.
                 }
+                Instruction::CheckpointDelayedDueToLocalData {} => {
+                    // Once we're able to connect in download-only mode, this would be an error.
+                }
                 Instruction::CloseSyncStream(close) => {
                     return Ok(Some(close));
                 }

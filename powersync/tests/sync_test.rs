@@ -22,7 +22,7 @@ use powersync_test_utils::{
     DatabaseTest, execute,
     mock_sync_service::TestConnector,
     query_all,
-    sync_line::{BucketChecksum, Checkpoint, SyncLine},
+    sync_line::{BucketChecksum, Checkpoint, DataLine, OpType, OplogEntry, SyncLine},
 };
 use rusqlite::params;
 use serde_json::json;
@@ -459,6 +459,99 @@ fn upload_retry() {
             .await;
 
         assert!(sync.db.next_crud_transaction().await.unwrap().is_none());
+    });
+}
+
+#[test]
+fn does_not_apply_checkpoint_with_pending_local_data() {
+    struct BlockedUploadConnector {
+        db: PowerSyncDatabase,
+        allow_upload: async_channel::Receiver<()>,
+    }
+
+    #[async_trait]
+    impl BackendConnector for BlockedUploadConnector {
+        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
+            Ok(PowerSyncCredentials {
+                endpoint: "https://rust.unit.test.powersync.com/".to_string(),
+                token: "token".to_string(),
+            })
+        }
+
+        async fn upload_data(&self) -> Result<(), PowerSyncError> {
+            let Some(tx) = self.db.next_crud_transaction().await? else {
+                return Ok(());
+            };
+
+            self.allow_upload.recv().await.unwrap();
+            tx.complete().await?;
+            Ok(())
+        }
+    }
+
+    let sync = SyncStreamTest::new();
+    let (allow_upload_tx, allow_upload_rx) = async_channel::bounded(1);
+    sync.run(sync.db.connect(SyncOptions::new(BlockedUploadConnector {
+        db: sync.db.clone(),
+        allow_upload: allow_upload_rx,
+    })));
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        execute(
+            &sync.db,
+            "INSERT INTO users (id, name) VALUES (?, ?)",
+            params!["local", "local user"],
+        )
+        .await;
+        sync.wait_for_status(|s| s.is_uploading()).await;
+
+        let remote_user = SyncLine::Data(DataLine {
+            bucket: "a",
+            data: vec![OplogEntry {
+                checksum: 0,
+                op_id: 1,
+                op: OpType::PUT,
+                object_id: Some("remote".to_string()),
+                object_type: Some("users"),
+                subkey: None,
+                data: Some(r#"{"name": "remote user"}"#),
+            }],
+        });
+
+        request
+            .send_checkpoint(Checkpoint::single_bucket("a", 1, None))
+            .await;
+        request.channel.send(remote_user).await.unwrap();
+        request.send_checkpoint_complete(1, None).await;
+
+        // The checkpoint must not be applied while there is pending local data.
+        assert!(!sync.db.status().has_synced());
+        assert_eq!(
+            query_all(&sync.db, "SELECT id FROM users", params![]).await,
+            json!([{"id": "local"}])
+        );
+
+        // Complete the upload, which creates a write checkpoint (10 in the mock service).
+        allow_upload_tx.send(()).await.unwrap();
+        sync.wait_for_status(|s| !s.is_uploading()).await;
+
+        // Once the service sends a checkpoint including the write, it can be applied.
+        request
+            .send_checkpoint(Checkpoint {
+                write_checkpoint: Some(10),
+                ..Checkpoint::single_bucket("a", 1, None)
+            })
+            .await;
+        request.send_checkpoint_complete(1, None).await;
+        sync.wait_for_status(|s| s.has_synced()).await;
+
+        assert_eq!(
+            query_all(&sync.db, "SELECT id FROM users", params![]).await,
+            json!([{"id": "remote"}])
+        );
     });
 }
 
