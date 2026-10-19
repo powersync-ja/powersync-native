@@ -1,3 +1,7 @@
+## 0.1.2 (unreleased)
+
+- Update PowerSync SQLite core extension to 0.5.4 ([release notes](https://github.com/powersync-ja/powersync-sqlite-core/releases/tag/v0.5.4)).
+
 ## 0.1.1
 
 - Add `PriorityStatus`, exposing sync status grouped by priority groups of Sync Streams.
