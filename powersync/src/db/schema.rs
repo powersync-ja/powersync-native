@@ -77,6 +77,19 @@ pub struct Table {
     pub indexes: Vec<Index>,
     #[serde(flatten)]
     pub options: TableOptions,
+    /// Marks this table as direct, meaning that it stores data directly as SQLite rows instead of
+    /// using an intermediate view around a JSON store.
+    ///
+    /// Direct tables are still managed by the PowerSync SDK, which is responsible for creating,
+    /// altering and dropping them.
+    /// You can query raw tables like JSON-based tables, and mutations are consistently tracked as
+    /// pending uploads.
+    /// For more information on direct tables, see [the documentation](https://docs.powersync.com/client-sdks/advanced/performance-optimization#direct-tables).
+    ///
+    /// Direct tables can't use a view name override.
+    ///
+    /// Direct tables are currently experimental.
+    pub direct: bool,
 }
 
 impl Table {
@@ -94,6 +107,7 @@ impl Table {
             columns,
             indexes: vec![],
             options: TableOptions::default(),
+            direct: false,
         };
         build(&mut table);
         table
@@ -151,6 +165,13 @@ impl Table {
                     )));
                 }
             }
+        }
+
+        if self.direct && self.view_name_override.is_some() {
+            return Err(PowerSyncError::argument_error(format!(
+                "Direct table {} can't use view name override",
+                self.name
+            )));
         }
 
         Ok(())
@@ -621,6 +642,15 @@ mod test {
         assert!(table.validate().is_ok());
 
         table.columns.push(Column::integer("a"));
+        assert!(table.validate().is_err());
+    }
+
+    #[test]
+    fn direct_table() {
+        let mut table = Table::create("users", vec![Column::text("name")], |tbl| tbl.direct = true);
+        assert!(table.validate().is_ok());
+
+        table.view_name_override = Some("forbidden".into());
         assert!(table.validate().is_err());
     }
 
