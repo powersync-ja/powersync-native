@@ -17,6 +17,7 @@ use powersync::{
     PowerSyncCredentials, PowerSyncDatabase, RequestsCheckpointMode, StreamPriority,
     StreamSubscription, StreamSubscriptionOptions, SyncOptions, SyncStatusData,
     error::PowerSyncError,
+    schema::{Column, Schema, Table},
 };
 use powersync_test_utils::{
     DatabaseTest, execute,
@@ -35,8 +36,12 @@ struct SyncStreamTest {
 
 impl SyncStreamTest {
     fn new() -> Self {
+        Self::with_schema(DatabaseTest::default_schema())
+    }
+
+    fn with_schema(schema: Schema) -> Self {
         let test = DatabaseTest::new();
-        let db = test.in_memory_database();
+        let db = PowerSyncDatabase::new(test.in_memory(), schema);
 
         Self { db, test }
     }
@@ -551,6 +556,80 @@ fn does_not_apply_checkpoint_with_pending_local_data() {
         assert_eq!(
             query_all(&sync.db, "SELECT id FROM users", params![]).await,
             json!([{"id": "remote"}])
+        );
+    });
+}
+
+#[test]
+fn direct_tables() {
+    // This is mostly a smoke test, the core extension manages direct tables and covers things like
+    // migrations.
+    let mut schema = Schema::default();
+    schema
+        .tables
+        .push(Table::create("users", vec![Column::text("name")], |tbl| {
+            tbl.direct = true
+        }));
+    let sync = SyncStreamTest::with_schema(schema);
+
+    sync.run(async {
+        assert_eq!(
+            query_all(
+                &sync.db,
+                "SELECT type FROM pragma_table_list('users')",
+                params![]
+            )
+            .await,
+            json!([{"type": "table"}])
+        );
+    });
+
+    sync.connect();
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        request
+            .send_checkpoint(Checkpoint::single_bucket("a", 1, None))
+            .await;
+        request
+            .channel
+            .send(SyncLine::Data(DataLine {
+                bucket: "a",
+                data: vec![OplogEntry {
+                    checksum: 0,
+                    op_id: 1,
+                    op: OpType::PUT,
+                    object_id: Some("user".to_string()),
+                    object_type: Some("users"),
+                    subkey: None,
+                    data: Some(r#"{"name": "synced user"}"#),
+                }],
+            }))
+            .await
+            .unwrap();
+        request.send_checkpoint_complete(1, None).await;
+        sync.wait_for_status(|s| s.has_synced()).await;
+
+        assert_eq!(
+            query_all(&sync.db, "SELECT * FROM users", params![]).await,
+            json!([{"id": "user", "name": "synced user"}])
+        );
+        sync.db.disconnect().await;
+
+        execute(&sync.db, "UPDATE users SET name = ?", params!["local user"]).await;
+        assert_eq!(
+            query_all(&sync.db, "SELECT * FROM users", params![]).await,
+            json!([{"id": "user", "name": "local user"}])
+        );
+
+        let tx = sync.db.next_crud_transaction().await.unwrap().unwrap();
+        assert_eq!(tx.crud.len(), 1);
+        let entry = &tx.crud[0];
+        assert_eq!(entry.table, "users");
+        assert_eq!(
+            entry.data.clone().map(serde_json::Value::Object),
+            Some(json!({"name": "local user"}))
         );
     });
 }
