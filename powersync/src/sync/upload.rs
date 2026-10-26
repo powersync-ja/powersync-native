@@ -110,7 +110,7 @@ struct CommonCrudUpload<'a> {
     db: &'a InnerPowerSyncState,
 }
 
-struct CrudUpload<'a> {
+pub struct CrudUpload<'a> {
     common: CommonCrudUpload<'a>,
     uploader: &'a dyn MutationUploader,
 }
@@ -175,7 +175,9 @@ impl<'a> CrudUpload<'a> {
         Self::read_oldest_crud_item_id(reader.sqlite_connection())
     }
 
-    fn read_oldest_crud_item_id(conn: &SqliteConnection) -> Result<Option<i64>, PowerSyncError> {
+    pub fn read_oldest_crud_item_id(
+        conn: &SqliteConnection,
+    ) -> Result<Option<i64>, PowerSyncError> {
         let stmt = conn.prepare("SELECT id FROM ps_crud ORDER BY id LIMIT 1")?;
 
         Ok(match stmt.step()? {

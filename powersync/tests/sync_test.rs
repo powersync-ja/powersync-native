@@ -1,7 +1,7 @@
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, SystemTime},
 };
@@ -1338,7 +1338,7 @@ fn connect_download_only() {
                 TestConnector::default(),
             ))
             .await;
-        let _request = sync.test.http.receive_requests.recv().await.unwrap();
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
         sync.wait_for_status(|s| s.is_connected()).await;
 
         // Create a local mutation, which is never uploaded.
@@ -1349,14 +1349,22 @@ fn connect_download_only() {
         )
         .await;
         sync.test.advance_time(Duration::from_hours(1));
-        assert_eq!(
-            query_all(&sync.db, "SELECT * FROM ps_crud", params![])
-                .await
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
+
+        // A new checkpoint can't be applied in this state, and should report an error.
+        request
+            .send_checkpoint(Checkpoint {
+                last_op_id: 0,
+                write_checkpoint: None,
+                buckets: vec![],
+                streams: vec![],
+            })
+            .await;
+        request.send_checkpoint_complete(0, None).await;
+        sync.wait_for_status(|s| {
+            s.download_error()
+                .is_some_and(|e| e.to_string().contains("no uploader is set"))
+        })
+        .await;
 
         // Upgrade to a full connection, which should upload.
         sync.db
@@ -1372,6 +1380,10 @@ fn connect_download_only() {
 
 #[test]
 fn connect_upload_only() {
+    #[derive(Error, Debug)]
+    #[error("Deliberate failure on first upload")]
+    struct FirstUploadFailure;
+
     let sync = SyncStreamTest::new();
     let did_upload = Arc::new(Event::new());
     let upload_listener = did_upload.listen();
@@ -1386,37 +1398,134 @@ fn connect_upload_only() {
     });
 
     sync.run(async {
-        sync.db
-            .connect(SyncOptions::upload_only(completing_uploader(
-                &sync.db,
-                &did_upload,
-            )))
-            .await;
-
         execute(
             &sync.db,
-            "INSERT INTO users (id, name) VALUES (uuid(), ?)",
-            params!["local mutation"],
+            "INSERT INTO users (id, name) VALUES (?, ?)",
+            params!["test1", "local mutation"],
         )
         .await;
+
+        let is_first_upload = Arc::new(AtomicBool::new(true));
+        let mut options = SyncOptions::upload_only({
+            let db = sync.db.clone();
+            let did_upload = did_upload.clone();
+
+            move || {
+                let db = db.clone();
+                let did_upload = did_upload.clone();
+                let is_first_upload = is_first_upload.clone();
+
+                async move {
+                    if let Some(tx) = db.next_crud_transaction().await? {
+                        // Verify that uploads are retried in upload-only mode too.
+                        if is_first_upload.swap(false, Ordering::SeqCst) {
+                            return Err(PowerSyncError::upload_error(FirstUploadFailure));
+                        }
+
+                        tx.complete().await?;
+                        did_upload.notify(usize::MAX);
+                    }
+
+                    Ok(())
+                }
+            }
+        });
+        options.with_retry_delay(Duration::ZERO);
+        sync.db.connect(options).await;
         upload_listener.await;
 
         // Connecting in upload-only mode should make no SDK-initiated HTTP requests.
         sync.test.advance_time(Duration::from_hours(1));
         assert!(sync.test.http.receive_requests.is_empty());
         assert_eq!(write_checkpoint_requests.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            sync.test
+                .http
+                .amount_of_checkpoint_requests
+                .load(Ordering::SeqCst),
+            0
+        );
 
-        // Reconnect in download-only mode. This should request a write checkpoint because the
+        // Reconnect in download-only mode. This should request a checkpoint because the
         // upload-only mode can't.
-        sync.db
-            .connect(SyncOptions::download_only(
-                SyncStreamTest::TEST_ENDPOINT,
-                TestConnector::default(),
-            ))
-            .await;
-        let _request = sync.test.http.receive_requests.recv().await.unwrap();
+        let (target_request_tx, target_request_rx) = async_channel::bounded(1);
+        let (release_request_tx, release_request_rx) = async_channel::bounded::<()>(1);
+        let is_seed_request = Arc::new(AtomicBool::new(true));
+
+        let mut options = SyncOptions::download_only(
+            SyncStreamTest::TEST_ENDPOINT,
+            TestConnector {
+                post_checkpoint_request: Arc::new(move |request_id| {
+                    let is_seed_request = is_seed_request.swap(false, Ordering::SeqCst);
+                    let target_request = target_request_tx.clone();
+                    let release_request = release_request_rx.clone();
+
+                    Some(
+                        async move {
+                            if !is_seed_request {
+                                target_request.send(request_id).await.unwrap();
+                                release_request.recv().await.unwrap();
+                            }
+
+                            Ok(request_id)
+                        }
+                        .boxed(),
+                    )
+                }),
+                token: Arc::new("token".to_string()),
+            },
+        );
+        options.with_retry_delay(Duration::ZERO);
+        options.with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
+        sync.db.connect(options).await;
+
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
         sync.wait_for_status(|s| s.is_connected()).await;
-        sync.test.advance_time(Duration::from_secs(1));
-        assert_eq!(write_checkpoint_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            query_all(&sync.db, "SELECT name FROM users", params![]).await,
+            json!([{"name": "local mutation"}])
+        );
+
+        let request_id = target_request_rx.recv().await.unwrap();
+        request
+            .send_checkpoint(Checkpoint {
+                write_checkpoint: Some(request_id),
+                ..Checkpoint::single_bucket("a", 1, None)
+            })
+            .await;
+        request
+            .channel
+            .send(SyncLine::Data(DataLine {
+                bucket: "a",
+                data: vec![OplogEntry {
+                    checksum: 0,
+                    op_id: 1,
+                    op: OpType::PUT,
+                    object_id: Some("test1".to_string()),
+                    object_type: Some("users"),
+                    subkey: None,
+                    data: Some(r#"{"name": "from server"}"#),
+                }],
+            }))
+            .await
+            .unwrap();
+        request.send_checkpoint_complete(1, None).await;
+        // Sync lines are processed in order, so this ensures the checkpoint has been handled.
+        request.send_keepalive(3600).await;
+        request.send_keepalive(3600).await;
+
+        // The checkpoint can't be applied before the local target is updated.
+        assert!(!sync.db.status().has_synced());
+        assert_eq!(
+            query_all(&sync.db, "SELECT name FROM users", params![]).await,
+            json!([{"name": "local mutation"}])
+        );
+
+        release_request_tx.send(()).await.unwrap();
+        sync.wait_for_status(|s| s.has_synced()).await;
+        assert_eq!(
+            query_all(&sync.db, "SELECT name FROM users", params![]).await,
+            json!([{"name": "from server"}])
+        );
     });
 }

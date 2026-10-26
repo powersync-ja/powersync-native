@@ -10,11 +10,13 @@ use serde_json::Map;
 use serde_json::value::RawValue;
 
 use crate::db::connection::{SqliteConnection, TransactionGuard};
+use crate::error::RawPowerSyncError;
 use crate::schema::SchemaOrCustom;
 use crate::sync::coordinator::SyncChannels;
 use crate::sync::download::http::checkpoint_request;
 use crate::sync::instruction::CheckpointRequestPayload;
 use crate::sync::options::{CheckpointMode, EndpointAndAuthenticator};
+use crate::sync::upload::CrudUpload;
 use crate::{
     SyncOptions,
     db::internal::InnerPowerSyncState,
@@ -150,7 +152,13 @@ impl<'a> DownloadClient<'a> {
                     self.endpoint.authenticator.invalidate_credentials();
                 }
                 Instruction::CheckpointDelayedDueToLocalData {} => {
-                    // Once we're able to connect in download-only mode, this would be an error.
+                    if !Self::will_upload(self.options, &self.db).await? {
+                        self.db.status.update(|status| {
+                            status.set_download_error(
+                                RawPowerSyncError::CannotApplyDataDueToLocalMutations.into(),
+                            )
+                        })
+                    }
                 }
                 Instruction::CloseSyncStream(close) => {
                     return Ok(Some(close));
@@ -166,6 +174,21 @@ impl<'a> DownloadClient<'a> {
         }
 
         Ok(None)
+    }
+
+    async fn will_upload(
+        options: &SyncOptions,
+        db: &InnerPowerSyncState,
+    ) -> Result<bool, PowerSyncError> {
+        if options.uploader.is_some() {
+            return Ok(true);
+        }
+
+        // If we're connected in download-only mode, we can still request checkpoints. But if there
+        // is a local write, that won't be uploaded.
+        let reader = db.reader().await?;
+        let has_crud = CrudUpload::read_oldest_crud_item_id(reader.sqlite_connection())?.is_some();
+        Ok(!has_crud)
     }
 
     async fn establish_sync_stream(
