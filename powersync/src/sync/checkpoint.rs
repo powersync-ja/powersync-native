@@ -5,13 +5,14 @@ use log::{debug, warn};
 use thiserror::Error;
 
 use crate::{
-    BackendConnector, CheckpointMode, RequestsCheckpointMode, SyncOptions, SyncStatusData,
+    CheckpointMode, RequestsCheckpointMode, SyncOptions, SyncStatusData,
     db::internal::InnerPowerSyncState,
     error::{PowerSyncError, RawPowerSyncError},
     sync::{
         coordinator::{SyncChannels, SyncCoordinator},
         download::http::checkpoint_request,
         instruction::CheckpointRequestPayload,
+        options::EndpointAndAuthenticator,
         upload::get_client_id,
     },
 };
@@ -113,16 +114,15 @@ pub async fn repost_unacknowledged_checkpoints(
     let CheckpointMode::Requests(requests) = options.checkpoints else {
         return;
     };
+    let Some(ref authenticator) = options.endpoint else {
+        return;
+    };
 
     loop {
         // Make sure the system is seeded and ready.
-        let result = repost_unacknowledged_checkpoint_iteration(
-            &db,
-            &channels,
-            options.connector.as_ref(),
-            requests,
-        )
-        .await;
+        let result =
+            repost_unacknowledged_checkpoint_iteration(&db, &channels, authenticator, requests)
+                .await;
 
         if let Err(err) = result {
             if let RawPowerSyncError::Checkpoint {
@@ -141,7 +141,7 @@ pub async fn repost_unacknowledged_checkpoints(
 async fn repost_unacknowledged_checkpoint_iteration(
     db: &InnerPowerSyncState,
     channels: &SyncChannels,
-    connector: &dyn BackendConnector,
+    authenticator: &EndpointAndAuthenticator,
     mode: RequestsCheckpointMode,
 ) -> Result<(), PowerSyncError> {
     // Make sure the system is seeded and ready
@@ -187,7 +187,7 @@ async fn repost_unacknowledged_checkpoint_iteration(
     debug!("Retrying checkpoint request id {request_id}");
     checkpoint_request(
         &db,
-        connector,
+        authenticator,
         &CheckpointRequestPayload {
             client_id: get_client_id(db).await?,
             checkpoint_request_id: request_id,

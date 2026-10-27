@@ -1,7 +1,7 @@
 use std::{
     sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, SystemTime},
 };
@@ -13,15 +13,15 @@ use futures_lite::{
     future::{self, yield_now},
 };
 use powersync::{
-    BackendConnector, CheckpointError, CheckpointMode, DisconnectAndClearFlags,
-    PowerSyncCredentials, PowerSyncDatabase, RequestsCheckpointMode, StreamPriority,
-    StreamSubscription, StreamSubscriptionOptions, SyncOptions, SyncStatusData,
+    Authenticator, CheckpointError, CheckpointMode, DisconnectAndClearFlags, MutationUploader,
+    PowerSyncDatabase, RequestsCheckpointMode, StreamPriority, StreamSubscription,
+    StreamSubscriptionOptions, SyncOptions, SyncStatusData,
     error::PowerSyncError,
     schema::{Column, Schema, Table},
 };
 use powersync_test_utils::{
     DatabaseTest, execute,
-    mock_sync_service::TestConnector,
+    mock_sync_service::{TestConnector, WriteCheckpointResponse},
     query_all,
     sync_line::{BucketChecksum, Checkpoint, DataLine, OpType, OplogEntry, SyncLine},
 };
@@ -58,7 +58,8 @@ impl SyncStreamTest {
     }
 
     fn connect_options(&self, configure: impl FnOnce(&mut SyncOptions)) {
-        let mut options = SyncOptions::new(TestConnector::default());
+        let connector = TestConnector::default();
+        let mut options = SyncOptions::new(Self::TEST_ENDPOINT, connector.clone(), connector);
         configure(&mut options);
 
         self.run(self.db.connect(options))
@@ -93,6 +94,8 @@ impl SyncStreamTest {
         })
         .await
     }
+
+    const TEST_ENDPOINT: &str = "https://rust-unit-test.powersync.com";
 }
 
 #[test]
@@ -401,15 +404,8 @@ fn upload_retry() {
     struct FirstUploadFailure;
 
     #[async_trait]
-    impl BackendConnector for FailOnFirstUpload {
-        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-            Ok(PowerSyncCredentials {
-                endpoint: "https://rust.unit.test.powersync.com/".to_string(),
-                token: "token".to_string(),
-            })
-        }
-
-        async fn upload_data(&self) -> Result<(), PowerSyncError> {
+    impl MutationUploader for FailOnFirstUpload {
+        async fn upload(&self) -> Result<(), PowerSyncError> {
             let Some(tx) = self.db.next_crud_transaction().await? else {
                 return Ok(());
             };
@@ -428,11 +424,15 @@ fn upload_retry() {
     let sync = SyncStreamTest::new();
     let upload_counter = Arc::new(AtomicUsize::default());
     let event = Arc::new(Event::new());
-    let mut options = SyncOptions::new(FailOnFirstUpload {
-        db: sync.db.clone(),
-        counter: upload_counter.clone(),
-        completed_second: event.clone(),
-    });
+    let mut options = SyncOptions::new(
+        SyncStreamTest::TEST_ENDPOINT,
+        TestConnector::default(),
+        FailOnFirstUpload {
+            db: sync.db.clone(),
+            counter: upload_counter.clone(),
+            completed_second: event.clone(),
+        },
+    );
     options.with_retry_delay(Duration::ZERO); // We can't use timers in tests
     sync.run(sync.db.connect(options));
 
@@ -475,15 +475,8 @@ fn does_not_apply_checkpoint_with_pending_local_data() {
     }
 
     #[async_trait]
-    impl BackendConnector for BlockedUploadConnector {
-        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-            Ok(PowerSyncCredentials {
-                endpoint: "https://rust.unit.test.powersync.com/".to_string(),
-                token: "token".to_string(),
-            })
-        }
-
-        async fn upload_data(&self) -> Result<(), PowerSyncError> {
+    impl MutationUploader for BlockedUploadConnector {
+        async fn upload(&self) -> Result<(), PowerSyncError> {
             let Some(tx) = self.db.next_crud_transaction().await? else {
                 return Ok(());
             };
@@ -496,10 +489,14 @@ fn does_not_apply_checkpoint_with_pending_local_data() {
 
     let sync = SyncStreamTest::new();
     let (allow_upload_tx, allow_upload_rx) = async_channel::bounded(1);
-    sync.run(sync.db.connect(SyncOptions::new(BlockedUploadConnector {
-        db: sync.db.clone(),
-        allow_upload: allow_upload_rx,
-    })));
+    sync.run(sync.db.connect(SyncOptions::new(
+        SyncStreamTest::TEST_ENDPOINT,
+        TestConnector::default(),
+        BlockedUploadConnector {
+            db: sync.db.clone(),
+            allow_upload: allow_upload_rx,
+        },
+    )));
 
     sync.run(async {
         let request = sync.test.http.receive_requests.recv().await.unwrap();
@@ -642,28 +639,24 @@ fn fetching_credentials_does_not_hold_the_download_writer_lease() {
     }
 
     #[async_trait]
-    impl BackendConnector for WriterUsingConnector {
-        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
+    impl Authenticator for WriterUsingConnector {
+        async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
             self.entered.send(()).await.unwrap();
             self.release.recv().await.unwrap();
-            Ok(PowerSyncCredentials {
-                endpoint: "https://rust.unit.test.powersync.com/".to_string(),
-                token: "token".to_string(),
-            })
-        }
-
-        async fn upload_data(&self) -> Result<(), PowerSyncError> {
-            Ok(())
+            Ok(Arc::new("token".to_string()))
         }
     }
 
     let sync = SyncStreamTest::new();
     let (entered_tx, entered_rx) = async_channel::bounded(1);
     let (release_tx, release_rx) = async_channel::bounded(1);
-    sync.run(sync.db.connect(SyncOptions::new(WriterUsingConnector {
-        entered: entered_tx,
-        release: release_rx,
-    })));
+    sync.run(sync.db.connect(SyncOptions::download_only(
+        SyncStreamTest::TEST_ENDPOINT,
+        WriterUsingConnector {
+            entered: entered_tx,
+            release: release_rx,
+        },
+    )));
 
     sync.run(async {
         entered_rx.recv().await.unwrap();
@@ -674,6 +667,57 @@ fn fetching_credentials_does_not_hold_the_download_writer_lease() {
         );
         drop(writer);
         release_tx.send(()).await.unwrap();
+    });
+}
+
+#[test]
+fn invalidates_cached_credentials_on_token_expiry() {
+    #[derive(Default)]
+    struct CachingState {
+        cached: Mutex<Option<Arc<String>>>,
+        fetches: AtomicUsize,
+        invalidations: AtomicUsize,
+    }
+
+    struct CachingAuthenticator(Arc<CachingState>);
+
+    #[async_trait]
+    impl Authenticator for CachingAuthenticator {
+        async fn resolve_credentials(&self) -> Result<Arc<String>, PowerSyncError> {
+            let mut cached = self.0.cached.lock().unwrap();
+            let token = cached.get_or_insert_with(|| {
+                let id = self.0.fetches.fetch_add(1, Ordering::SeqCst);
+                Arc::new(format!("token-{id}"))
+            });
+
+            Ok(token.clone())
+        }
+
+        fn invalidate_credentials(&self) {
+            self.0.invalidations.fetch_add(1, Ordering::SeqCst);
+            *self.0.cached.lock().unwrap() = None;
+        }
+    }
+
+    let sync = SyncStreamTest::new();
+    let authenticator = Arc::new(CachingState::default());
+    let options = SyncOptions::download_only(
+        SyncStreamTest::TEST_ENDPOINT,
+        CachingAuthenticator(authenticator.clone()),
+    );
+    sync.run(sync.db.connect(options));
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        assert_eq!(authenticator.fetches.load(Ordering::SeqCst), 1);
+        assert_eq!(authenticator.invalidations.load(Ordering::SeqCst), 0);
+
+        // A token about to expire makes the core extension request new credentials.
+        request.send_keepalive(5).await;
+
+        while authenticator.invalidations.load(Ordering::SeqCst) == 0 {
+            yield_now().await;
+        }
     });
 }
 
@@ -741,20 +785,13 @@ fn reconnects_on_failure() {
 
 #[test]
 fn requests_checkpoints_for_updates() {
-    struct TestConnector {
+    struct TestUploader {
         db: PowerSyncDatabase,
     }
 
     #[async_trait]
-    impl BackendConnector for TestConnector {
-        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-            Ok(PowerSyncCredentials {
-                endpoint: "https://rust.unit.test.powersync.com/".to_string(),
-                token: "token".to_string(),
-            })
-        }
-
-        async fn upload_data(&self) -> Result<(), PowerSyncError> {
+    impl MutationUploader for TestUploader {
+        async fn upload(&self) -> Result<(), PowerSyncError> {
             let Some(tx) = self.db.next_crud_transaction().await? else {
                 return Ok(());
             };
@@ -765,9 +802,13 @@ fn requests_checkpoints_for_updates() {
     }
 
     let sync = SyncStreamTest::new();
-    let mut options = SyncOptions::new(TestConnector {
-        db: sync.db.clone(),
-    });
+    let mut options = SyncOptions::new(
+        SyncStreamTest::TEST_ENDPOINT,
+        TestConnector::default(),
+        TestUploader {
+            db: sync.db.clone(),
+        },
+    );
     options.with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
     options.with_retry_delay(Duration::ZERO);
     sync.run(sync.db.connect(options));
@@ -868,15 +909,8 @@ fn download_is_retried_on_checkpoint_request() {
     }
 
     #[async_trait]
-    impl BackendConnector for Connector {
-        async fn fetch_credentials(&self) -> Result<PowerSyncCredentials, PowerSyncError> {
-            Ok(PowerSyncCredentials {
-                endpoint: "https://rust.unit.test.powersync.com/".to_string(),
-                token: "token".to_string(),
-            })
-        }
-
-        async fn upload_data(&self) -> Result<(), PowerSyncError> {
+    impl MutationUploader for Connector {
+        async fn upload(&self) -> Result<(), PowerSyncError> {
             let tx = self.db.next_crud_transaction().await?;
             if let Some(tx) = tx {
                 tx.complete().await?;
@@ -887,9 +921,13 @@ fn download_is_retried_on_checkpoint_request() {
     }
 
     let sync = SyncStreamTest::new();
-    let mut options = SyncOptions::new(Connector {
-        db: sync.db.clone(),
-    });
+    let mut options = SyncOptions::new(
+        SyncStreamTest::TEST_ENDPOINT,
+        TestConnector::default(),
+        Connector {
+            db: sync.db.clone(),
+        },
+    );
     options.with_retry_delay(Duration::from_hours(1));
     options.with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
 
@@ -923,19 +961,23 @@ fn download_is_retried_on_checkpoint_request() {
 }
 
 #[test]
-fn can_use_checkpoint_method_from_connector() {
+fn can_use_checkpoint_method_from_authenticator() {
     let sync = SyncStreamTest::new();
     let did_request_checkpoint = Event::new();
     let listener = did_request_checkpoint.listen();
 
-    let mut options = SyncOptions::new(TestConnector {
-        post_checkpoint_request: Box::new(move |request_id| {
-            assert_eq!(request_id, 1);
+    let mut options = SyncOptions::download_only(
+        SyncStreamTest::TEST_ENDPOINT,
+        TestConnector {
+            post_checkpoint_request: Arc::new(move |request_id| {
+                assert_eq!(request_id, 1);
 
-            did_request_checkpoint.notify(1);
-            return Some(async move { Ok(request_id) }.boxed());
-        }),
-    });
+                did_request_checkpoint.notify(1);
+                return Some(async move { Ok(request_id) }.boxed());
+            }),
+            token: Arc::new("token".to_string()),
+        },
+    );
     options.with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
     options.with_retry_delay(Duration::ZERO);
     sync.run(sync.db.connect(options));
@@ -1255,6 +1297,235 @@ fn disconnect_and_clear_soft() {
         assert_eq!(
             query_all(&sync.db, "SELECT name FROM ps_buckets", params![]).await,
             json!([])
+        );
+    });
+}
+
+/// Creates a [MutationUploader] that completes the next CRUD transaction and then notifies
+/// `did_upload`.
+fn completing_uploader(
+    db: &PowerSyncDatabase,
+    did_upload: &Arc<Event>,
+) -> impl MutationUploader + 'static {
+    let db = db.clone();
+    let did_upload = did_upload.clone();
+
+    move || {
+        let db = db.clone();
+        let did_upload = did_upload.clone();
+
+        async move {
+            if let Some(tx) = db.next_crud_transaction().await? {
+                tx.complete().await?;
+                did_upload.notify(usize::MAX);
+            }
+
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn connect_download_only() {
+    let sync = SyncStreamTest::new();
+    let did_upload = Arc::new(Event::new());
+    let upload_listener = did_upload.listen();
+
+    sync.run(async {
+        sync.db
+            .connect(SyncOptions::download_only(
+                SyncStreamTest::TEST_ENDPOINT,
+                TestConnector::default(),
+            ))
+            .await;
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        // Create a local mutation, which is never uploaded.
+        execute(
+            &sync.db,
+            "INSERT INTO users (id, name) VALUES (uuid(), ?)",
+            params!["local mutation"],
+        )
+        .await;
+        sync.test.advance_time(Duration::from_hours(1));
+
+        // A new checkpoint can't be applied in this state, and should report an error.
+        request
+            .send_checkpoint(Checkpoint {
+                last_op_id: 0,
+                write_checkpoint: None,
+                buckets: vec![],
+                streams: vec![],
+            })
+            .await;
+        request.send_checkpoint_complete(0, None).await;
+        sync.wait_for_status(|s| {
+            s.download_error()
+                .is_some_and(|e| e.to_string().contains("no uploader is set"))
+        })
+        .await;
+
+        // Upgrade to a full connection, which should upload.
+        sync.db
+            .connect(SyncOptions::new(
+                SyncStreamTest::TEST_ENDPOINT,
+                TestConnector::default(),
+                completing_uploader(&sync.db, &did_upload),
+            ))
+            .await;
+        upload_listener.await;
+    });
+}
+
+#[test]
+fn connect_upload_only() {
+    #[derive(Error, Debug)]
+    #[error("Deliberate failure on first upload")]
+    struct FirstUploadFailure;
+
+    let sync = SyncStreamTest::new();
+    let did_upload = Arc::new(Event::new());
+    let upload_listener = did_upload.listen();
+
+    let write_checkpoint_requests = Arc::new(AtomicUsize::new(0));
+    *sync.test.http.write_checkpoints.lock().unwrap() = Box::new({
+        let requests = write_checkpoint_requests.clone();
+        move || {
+            requests.fetch_add(1, Ordering::SeqCst);
+            WriteCheckpointResponse::new("1".to_string())
+        }
+    });
+
+    sync.run(async {
+        execute(
+            &sync.db,
+            "INSERT INTO users (id, name) VALUES (?, ?)",
+            params!["test1", "local mutation"],
+        )
+        .await;
+
+        let is_first_upload = Arc::new(AtomicBool::new(true));
+        let mut options = SyncOptions::upload_only({
+            let db = sync.db.clone();
+            let did_upload = did_upload.clone();
+
+            move || {
+                let db = db.clone();
+                let did_upload = did_upload.clone();
+                let is_first_upload = is_first_upload.clone();
+
+                async move {
+                    if let Some(tx) = db.next_crud_transaction().await? {
+                        // Verify that uploads are retried in upload-only mode too.
+                        if is_first_upload.swap(false, Ordering::SeqCst) {
+                            return Err(PowerSyncError::upload_error(FirstUploadFailure));
+                        }
+
+                        tx.complete().await?;
+                        did_upload.notify(usize::MAX);
+                    }
+
+                    Ok(())
+                }
+            }
+        });
+        options.with_retry_delay(Duration::ZERO);
+        sync.db.connect(options).await;
+        upload_listener.await;
+
+        // Connecting in upload-only mode should make no SDK-initiated HTTP requests.
+        sync.test.advance_time(Duration::from_hours(1));
+        assert!(sync.test.http.receive_requests.is_empty());
+        assert_eq!(write_checkpoint_requests.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            sync.test
+                .http
+                .amount_of_checkpoint_requests
+                .load(Ordering::SeqCst),
+            0
+        );
+
+        // Reconnect in download-only mode. This should request a checkpoint because the
+        // upload-only mode can't.
+        let (target_request_tx, target_request_rx) = async_channel::bounded(1);
+        let (release_request_tx, release_request_rx) = async_channel::bounded::<()>(1);
+        let is_seed_request = Arc::new(AtomicBool::new(true));
+
+        let mut options = SyncOptions::download_only(
+            SyncStreamTest::TEST_ENDPOINT,
+            TestConnector {
+                post_checkpoint_request: Arc::new(move |request_id| {
+                    let is_seed_request = is_seed_request.swap(false, Ordering::SeqCst);
+                    let target_request = target_request_tx.clone();
+                    let release_request = release_request_rx.clone();
+
+                    Some(
+                        async move {
+                            if !is_seed_request {
+                                target_request.send(request_id).await.unwrap();
+                                release_request.recv().await.unwrap();
+                            }
+
+                            Ok(request_id)
+                        }
+                        .boxed(),
+                    )
+                }),
+                token: Arc::new("token".to_string()),
+            },
+        );
+        options.with_retry_delay(Duration::ZERO);
+        options.with_checkpoint_mode(CheckpointMode::Requests(RequestsCheckpointMode::default()));
+        sync.db.connect(options).await;
+
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+        assert_eq!(
+            query_all(&sync.db, "SELECT name FROM users", params![]).await,
+            json!([{"name": "local mutation"}])
+        );
+
+        let request_id = target_request_rx.recv().await.unwrap();
+        request
+            .send_checkpoint(Checkpoint {
+                write_checkpoint: Some(request_id),
+                ..Checkpoint::single_bucket("a", 1, None)
+            })
+            .await;
+        request
+            .channel
+            .send(SyncLine::Data(DataLine {
+                bucket: "a",
+                data: vec![OplogEntry {
+                    checksum: 0,
+                    op_id: 1,
+                    op: OpType::PUT,
+                    object_id: Some("test1".to_string()),
+                    object_type: Some("users"),
+                    subkey: None,
+                    data: Some(r#"{"name": "from server"}"#),
+                }],
+            }))
+            .await
+            .unwrap();
+        request.send_checkpoint_complete(1, None).await;
+        // Sync lines are processed in order, so this ensures the checkpoint has been handled.
+        request.send_keepalive(3600).await;
+        request.send_keepalive(3600).await;
+
+        // The checkpoint can't be applied before the local target is updated.
+        assert!(!sync.db.status().has_synced());
+        assert_eq!(
+            query_all(&sync.db, "SELECT name FROM users", params![]).await,
+            json!([{"name": "local mutation"}])
+        );
+
+        release_request_tx.send(()).await.unwrap();
+        sync.wait_for_status(|s| s.has_synced()).await;
+        assert_eq!(
+            query_all(&sync.db, "SELECT name FROM users", params![]).await,
+            json!([{"name": "from server"}])
         );
     });
 }

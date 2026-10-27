@@ -132,6 +132,10 @@ pub(crate) enum RawPowerSyncError {
     },
     #[error("Checkpoint error: {error}")]
     Checkpoint { error: CheckpointError },
+    #[error(
+        "Synced data cannot be applied due to local mutations, but no uploader is set. The sync client cannot proceed."
+    )]
+    CannotApplyDataDueToLocalMutations,
 }
 
 impl From<ResultCode> for PowerSyncError {

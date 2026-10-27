@@ -1,7 +1,10 @@
-## 0.1.2 (unreleased)
+## 0.2.0 (unreleased)
 
 - Update PowerSync SQLite core extension to 0.5.4 ([release notes](https://github.com/powersync-ja/powersync-sqlite-core/releases/tag/v0.5.4)).
 - Support [direct tables](https://docs.powersync.com/client-sdks/advanced/performance-optimization#direct-tables).
+- __Breaking__: Split `BackendConnector` trait into `Authenticator` and `MutationUploader`.
+  - `Authenticator` is allowed to cache tokens now, and is informed when a token has expired.
+  - Add `SyncOptions::download_only` and `SyncOptions::upload_only` for unidirectional sync.
 
 ## 0.1.1
 
