@@ -86,7 +86,7 @@ pub struct Table {
     /// and dropping them.
     /// You can query raw tables like JSON-based tables, and mutations are consistently tracked as
     /// pending uploads.
-    /// For more information on managed tables, see [the documentation](https://docs.powersync.com/client-sdks/advanced/performance-optimization#managed-tables).
+    /// For more information on managed tables, see [the documentation](https://docs.powersync.com/client-sdks/advanced/performance-optimization#managed-views-vs-managed-tables).
     ///
     /// Direct tables can't use a view name override.
     ///
