@@ -77,18 +77,20 @@ pub struct Table {
     pub indexes: Vec<Index>,
     #[serde(flatten)]
     pub options: TableOptions,
-    /// Marks this table as direct, meaning that it stores data directly as SQLite rows instead of
-    /// using an intermediate view around a JSON store.
+    /// Marks this table as a direct, managed table.
     ///
-    /// Direct tables are still managed by the PowerSync SDK, which is responsible for creating,
-    /// altering and dropping them.
+    /// Enabling this flag makes PowerSync store data directly as SQLite rows instead of using an
+    /// intermediate view around a JSON store.
+    ///
+    /// The table is still managed by the PowerSync SDK, which is responsible for creating, altering
+    /// and dropping them.
     /// You can query raw tables like JSON-based tables, and mutations are consistently tracked as
     /// pending uploads.
-    /// For more information on direct tables, see [the documentation](https://docs.powersync.com/client-sdks/advanced/performance-optimization#direct-tables).
+    /// For more information on managed tables, see [the documentation](https://docs.powersync.com/client-sdks/advanced/performance-optimization#managed-tables).
     ///
     /// Direct tables can't use a view name override.
     ///
-    /// Direct tables are currently experimental.
+    /// Direct tables are currently in alpha.
     pub direct: bool,
 }
 
