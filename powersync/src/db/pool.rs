@@ -22,6 +22,11 @@ pub struct ConnectionPool {
 
 impl ConnectionPool {
     fn prepare_writer(connection: SqliteConnection) -> Arc<Mutex<SqliteConnection>> {
+        // Run DELETE triggers for rows removed by REPLACE and allow triggers to fire recursively,
+        // so triggers behave the same across PowerSync SDKs.
+        connection
+            .exec(c"PRAGMA recursive_triggers = TRUE")
+            .expect("could not enable recursive triggers");
         connection
             .exec(c"SELECT powersync_update_hooks('install');")
             .expect("could not install update hook");
