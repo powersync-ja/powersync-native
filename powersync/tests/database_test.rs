@@ -23,6 +23,20 @@ fn link_core_extension() {
 }
 
 #[test]
+fn enables_recursive_triggers() {
+    future::block_on(async move {
+        let test = DatabaseTest::new();
+        let db = test.in_memory_database();
+
+        let writer = db.writer().await.unwrap();
+        let enabled: bool = writer
+            .query_row("PRAGMA recursive_triggers", params![], |row| row.get(0))
+            .unwrap();
+        assert!(enabled);
+    });
+}
+
+#[test]
 fn test_concurrent_reads() {
     let test = DatabaseTest::new();
     let db = Arc::new(test.test_dir_database());
