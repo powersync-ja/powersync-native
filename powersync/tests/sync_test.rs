@@ -784,6 +784,51 @@ fn reconnects_on_failure() {
 }
 
 #[test]
+fn reconnects_when_stream_stays_silent() {
+    let sync = SyncStreamTest::new();
+    sync.connect_options(|options| {
+        options.with_retry_delay(Duration::from_mins(1));
+    });
+
+    sync.run(async {
+        let request = sync.test.http.receive_requests.recv().await.unwrap();
+        sync.wait_for_status(|s| s.is_connected()).await;
+
+        // Keepalives arriving within the timeout keep the connection alive.
+        for _ in 0..3 {
+            sync.test.advance_time(Duration::from_secs(29));
+            request.send_keepalive(3600).await;
+            // Let the client consume the line before time moves on.
+            sync.test.advance_time(Duration::ZERO);
+        }
+        sync.test.advance_time(Duration::from_secs(29));
+        assert!(sync.db.status().download_error().is_none());
+        assert!(sync.db.status().is_connected());
+
+        // A stream that stops sending without closing is treated as a failed connection.
+        // advance_time drives the client until it is idle, so the status is final here.
+        sync.test.advance_time(Duration::from_secs(2));
+        let status = sync.db.status();
+        assert!(
+            status.download_error().is_some_and(|e| e
+                .to_string()
+                .contains("no data received on the sync stream")),
+            "{:?}",
+            status.download_error()
+        );
+    });
+
+    let task = sync.test.ex.spawn({
+        let http = sync.test.http.clone();
+        async move { http.receive_requests.recv().await }
+    });
+
+    // Should reconnect after the configured delay.
+    sync.test.advance_time(Duration::from_mins(1));
+    assert!(task.is_finished());
+}
+
+#[test]
 fn requests_checkpoints_for_updates() {
     struct TestUploader {
         db: PowerSyncDatabase,
@@ -860,6 +905,8 @@ fn reposts_current_checkpoint_until_applied() {
         options.with_checkpoint_mode(CheckpointMode::Requests(
             RequestsCheckpointMode::with_retry_duration(Duration::from_hours(1)).unwrap(),
         ));
+        // The mock service sends no keepalives while time advances by hours.
+        options.with_stream_idle_timeout(None);
     });
 
     sync.run(async {
@@ -1332,12 +1379,11 @@ fn connect_download_only() {
     let upload_listener = did_upload.listen();
 
     sync.run(async {
-        sync.db
-            .connect(SyncOptions::download_only(
-                SyncStreamTest::TEST_ENDPOINT,
-                TestConnector::default(),
-            ))
-            .await;
+        let mut options =
+            SyncOptions::download_only(SyncStreamTest::TEST_ENDPOINT, TestConnector::default());
+        // The mock service sends no keepalives while time advances by an hour.
+        options.with_stream_idle_timeout(None);
+        sync.db.connect(options).await;
         let request = sync.test.http.receive_requests.recv().await.unwrap();
         sync.wait_for_status(|s| s.is_connected()).await;
 

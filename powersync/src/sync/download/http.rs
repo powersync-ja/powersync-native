@@ -1,8 +1,11 @@
 use std::borrow::Cow;
+use std::io;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::Authenticator;
-use crate::http::{Request, Response};
+use crate::env::AsyncRuntime;
+use crate::http::{Request, Response, ResponseStream};
 use crate::sync::checkpoint::CheckpointError;
 use crate::sync::instruction::CheckpointRequestPayload;
 use crate::sync::options::EndpointAndAuthenticator;
@@ -13,17 +16,21 @@ use crate::{
     sync::download::sync_iteration::DownloadEvent,
     util::BsonObjects,
 };
-use futures_lite::{Stream, StreamExt, stream};
+use futures_lite::{Stream, StreamExt, future, stream};
 use serde::Deserialize;
 use serde_with::{DisplayFromStr, serde_as};
 
 /// Requests a stream of [DownloadEvent]s (more specifically text or binary lines) by opening a
 /// connection to the PowerSync service.
+///
+/// With an `idle_timeout`, the stream fails when the service sends nothing for that long.
 pub fn sync_stream(
     db: Arc<InnerPowerSyncState>,
     authenticator: Arc<EndpointAndAuthenticator>,
     request_body: String,
+    idle_timeout: Option<Duration>,
 ) -> impl Stream<Item = Result<DownloadEvent, PowerSyncError>> {
+    let runtime = db.env.runtime.clone();
     let response = async move {
         let auth = authenticator.fetch_credentials().await?;
 
@@ -52,11 +59,18 @@ pub fn sync_stream(
 
     let stream = stream::once_future(response);
 
-    StreamExt::flat_map(stream, |response| match response {
+    StreamExt::flat_map(stream, move |response| match response {
         Err(error) => stream::once(Err(error)).boxed(),
-        Ok(response) => stream::once(Ok(DownloadEvent::ConnectionEstablished))
-            .chain(response_to_lines(response))
-            .boxed(),
+        Ok(mut response) => {
+            if let Some(timeout) = idle_timeout {
+                response.body.reader =
+                    with_idle_timeout(response.body.reader, runtime.clone(), timeout);
+            }
+
+            stream::once(Ok(DownloadEvent::ConnectionEstablished))
+                .chain(response_to_lines(response))
+                .boxed()
+        }
     })
 }
 
@@ -175,6 +189,42 @@ fn check_ok(code: u16, authenticator: &dyn Authenticator) -> Result<(), PowerSyn
     }
 }
 
+/// Fails the stream when the underlying response doesn't emit a chunk within `timeout`.
+///
+/// The timer only runs while a chunk is awaited, so time spent processing lines doesn't count
+/// towards it. After a timeout, the stream ends.
+fn with_idle_timeout(
+    reader: ResponseStream,
+    runtime: Arc<dyn AsyncRuntime>,
+    timeout: Duration,
+) -> ResponseStream {
+    stream::unfold(Some(reader), move |reader| {
+        let runtime = runtime.clone();
+
+        async move {
+            let mut reader = reader?;
+            let next_chunk = async { Some(reader.next().await) };
+            let timed_out = async {
+                runtime.delay_once(timeout).await;
+                None
+            };
+
+            match future::or(next_chunk, timed_out).await {
+                Some(Some(chunk)) => Some((chunk, Some(reader))),
+                Some(None) => None,
+                None => {
+                    let error = io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("no data received on the sync stream in {timeout:?}"),
+                    );
+                    Some((Err(RawPowerSyncError::from(error).into()), None))
+                }
+            }
+        }
+    })
+    .boxed()
+}
+
 /// Reads sync lines from an HTTP response stream.
 ///
 /// For JSON responses, this splits at newline chars. For BSON responses, this tracks the length
@@ -280,7 +330,7 @@ mod tests {
             endpoint: endpoint.to_string(),
             authenticator: Box::new(StaticAuthenticator),
         });
-        let mut events = Box::pin(sync_stream(db, authenticator, "{}".to_string()));
+        let mut events = Box::pin(sync_stream(db, authenticator, "{}".to_string(), None));
 
         future::block_on(events.as_mut().try_next())
     }

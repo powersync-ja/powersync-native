@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_lite::FutureExt;
 use futures_lite::future::Boxed;
@@ -141,6 +142,7 @@ impl<'a> DownloadClient<'a> {
                         &mut self.stream,
                         request,
                         self.endpoint.clone(),
+                        self.options.stream_idle_timeout,
                     )
                     .await?;
 
@@ -196,10 +198,11 @@ impl<'a> DownloadClient<'a> {
         stream: &mut Option<BoxedStream<Result<DownloadEvent, PowerSyncError>>>,
         request: Box<RawValue>,
         endpoint: Arc<EndpointAndAuthenticator>,
+        idle_timeout: Option<Duration>,
     ) -> Result<(), PowerSyncError> {
         let request = request.get().to_string();
 
-        *stream = Some(sync_stream(db, endpoint, request).boxed());
+        *stream = Some(sync_stream(db, endpoint, request, idle_timeout).boxed());
         Ok(())
     }
 

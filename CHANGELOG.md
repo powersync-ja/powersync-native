@@ -1,3 +1,9 @@
+## Unreleased
+
+- Reconnect when the sync stream receives no data for 30 seconds. A connection dropped without being
+  closed (e.g. after a network change) previously left the client connected without ever receiving
+  data again. Configure with `SyncOptions::with_stream_idle_timeout`.
+
 ## 0.2.0
 
 - Update PowerSync SQLite core extension to 0.5.4 ([release notes](https://github.com/powersync-ja/powersync-sqlite-core/releases/tag/v0.5.4)).

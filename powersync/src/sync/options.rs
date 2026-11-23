@@ -19,18 +19,25 @@ pub struct SyncOptions {
     pub(crate) include_default_streams: bool,
     /// The retry delay between sync iterations on errors.
     pub(crate) retry_delay: Duration,
+    /// How long the sync stream may stay silent before the connection is considered dead.
+    pub(crate) stream_idle_timeout: Option<Duration>,
 
     /// How to request checkpoints after completing uploads.
     pub(crate) checkpoints: CheckpointMode,
 }
 
 impl SyncOptions {
+    /// The service sends a keepalive line about every 20 seconds, even when no data changes, so a
+    /// healthy connection is never silent for this long.
+    const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
     fn empty() -> Self {
         Self {
             endpoint: None,
             uploader: None,
             include_default_streams: true,
             retry_delay: Duration::from_secs(5),
+            stream_idle_timeout: Some(Self::DEFAULT_STREAM_IDLE_TIMEOUT),
             checkpoints: CheckpointMode::default(),
         }
     }
@@ -79,6 +86,16 @@ impl SyncOptions {
     /// Configures the delay after a failed sync iteration (the default is 5 seconds).
     pub fn with_retry_delay(&mut self, delay: Duration) {
         self.retry_delay = delay;
+    }
+
+    /// Configures how long the sync stream may go without receiving any data before the
+    /// connection is considered dead and the client reconnects (the default is 30 seconds).
+    ///
+    /// Without a timeout, a connection that is dropped without being closed (e.g. by a network
+    /// change or a proxy) would leave the client connected, but never receiving data again.
+    /// `None` disables the timeout.
+    pub fn with_stream_idle_timeout(&mut self, timeout: Option<Duration>) {
+        self.stream_idle_timeout = timeout;
     }
 
     pub(crate) fn retry_delay(
